@@ -1,0 +1,158 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    function isValidGroup(data) {
+      return data.name is string &&
+        data.name.size() > 0 &&
+        data.name.size() <= 100 &&
+        data.baseCurrency is string &&
+        data.baseCurrency.size() >= 2 &&
+        data.baseCurrency.size() <= 10 &&
+        (!('memberUserIds' in data) || (data.memberUserIds is list && data.memberUserIds.size() <= 100));
+    }
+
+    function isValidMember(data) {
+      return data.name is string &&
+        data.name.size() > 0 &&
+        data.name.size() <= 100;
+    }
+
+    function isValidExpense(data) {
+      return data.groupId is string &&
+        data.groupId.size() > 0 &&
+        data.groupId.size() <= 128 &&
+        data.title is string &&
+        data.title.size() > 0 &&
+        data.title.size() <= 150 &&
+        data.baseAmount is number &&
+        data.baseAmount >= 0 &&
+        data.baseAmount <= 1000000000;
+    }
+
+    function isValidExpenseShare(data) {
+      return data.expenseId is string &&
+        data.expenseId.size() > 0 &&
+        data.expenseId.size() <= 128 &&
+        data.memberId is string &&
+        data.memberId.size() > 0 &&
+        data.memberId.size() <= 128 &&
+        data.shareAmount is number &&
+        data.shareAmount >= 0 &&
+        data.shareAmount <= 1000000000;
+    }
+
+    function isValidSettlement(data) {
+      return data.groupId is string &&
+        data.groupId.size() > 0 &&
+        data.groupId.size() <= 128 &&
+        data.fromMemberId is string &&
+        data.toMemberId is string &&
+        data.fromMemberId != data.toMemberId &&
+        data.amount is number &&
+        data.amount > 0 &&
+        data.amount <= 1000000000;
+    }
+
+    // 1. Groups Collection
+    match /groups/{groupId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(groupId) && isValidGroup(incoming());
+      allow delete: if isValidId(groupId);
+    }
+
+    // 2. Members Collection
+    match /members/{memberId} {
+      allow read: if true;
+      allow create, update: if isValidId(memberId) && isValidMember(incoming());
+      allow delete: if isValidId(memberId);
+    }
+
+    // 3. GroupMembers Collection (Mapping)
+    match /groupMembers/{id} {
+      allow read: if true;
+      allow create, update: if isValidId(id) &&
+        incoming().groupId is string &&
+        incoming().groupId.size() > 0 &&
+        incoming().memberId is string &&
+        incoming().memberId.size() > 0;
+      allow delete: if isValidId(id);
+    }
+
+    // 4. Expenses Collection
+    match /expenses/{expenseId} {
+      allow read: if true;
+      allow create, update: if isValidId(expenseId) && isValidExpense(incoming());
+      allow delete: if isValidId(expenseId);
+    }
+
+    // 5. ExpenseShares Collection
+    match /expenseShares/{shareId} {
+      allow read: if true;
+      allow create, update: if isValidId(shareId) && isValidExpenseShare(incoming());
+      allow delete: if isValidId(shareId);
+    }
+
+    // 6. Settlements Collection
+    match /settlements/{settlementId} {
+      allow read: if true;
+      allow create, update: if isValidId(settlementId) && isValidSettlement(incoming());
+      allow delete: if isValidId(settlementId);
+    }
+
+    // 7. Invite Codes (Unique reservation index)
+    match /inviteCodes/{code} {
+      allow get: if true;
+      allow list: if false; // Disallow enumerating all invite codes in the system
+      allow create, update: if isValidId(code) &&
+        incoming().groupId is string &&
+        incoming().groupId.size() > 0 &&
+        incoming().groupId.size() <= 128;
+      allow delete: if isValidId(code);
+    }
+
+    // 8. Account Recovery (Hashed verifiers)
+    match /recovery/{verifierHash} {
+      allow get: if true;
+      allow list: if false; // Disallow enumerating recovery hashes
+      allow create, update: if isValidId(verifierHash) &&
+        incoming().uid is string &&
+        incoming().uid.size() > 0 &&
+        incoming().uid.size() <= 128;
+      allow delete: if isValidId(verifierHash);
+    }
+
+    // 9. Security Profiles
+    match /securityProfiles/{uid} {
+      allow read, write: if isValidId(uid);
+    }
+
+    // 10. User Directory (Unique Username & Registered App User Lookup)
+    match /userDirectory/{username} {
+      allow read: if true;
+      allow create, update: if isValidId(username) &&
+        incoming().username is string &&
+        incoming().username.size() >= 2 &&
+        incoming().username.size() <= 40 &&
+        incoming().memberId is string &&
+        incoming().memberId.size() > 0 &&
+        incoming().name is string &&
+        incoming().name.size() > 0;
+      allow delete: if isValidId(username);
+    }
+
+    // Default deny all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

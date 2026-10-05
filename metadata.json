@@ -1,0 +1,10 @@
+{
+  "name": "Splitzy",
+  "description": "A clean, lightweight, mobile-first group expense tracker for friends, roommates, and travelers with AD/BS calendar, receipt uploads, QR invite codes, and multi-language support.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

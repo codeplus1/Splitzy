@@ -1,0 +1,201 @@
+{
+  "entities": {
+    "groups": {
+      "title": "Group",
+      "description": "Expense sharing group containing participants and expenses",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "baseCurrency": { "type": "string" },
+        "preferredCalendar": { "type": "string" },
+        "language": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "memberUserIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "inviteCode": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "baseCurrency"]
+    },
+    "members": {
+      "title": "Member",
+      "description": "Participants in expense sharing groups",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "avatar": { "type": "string" },
+        "color": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "userDirectory": {
+      "title": "UserDirectoryEntry",
+      "description": "Global unique username directory for verifying registered Splitzy app users",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "memberId": { "type": "string" },
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "avatar": { "type": "string" },
+        "color": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["username", "memberId", "uid", "name"]
+    },
+    "groupMembers": {
+      "title": "GroupMember",
+      "description": "Mapping linking members to groups",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "groupId": { "type": "string" },
+        "memberId": { "type": "string" }
+      },
+      "required": ["id", "groupId", "memberId"]
+    },
+    "expenses": {
+      "title": "Expense",
+      "description": "Shared expense records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "groupId": { "type": "string" },
+        "title": { "type": "string" },
+        "originalAmount": { "type": "number" },
+        "originalCurrency": { "type": "string" },
+        "exchangeRate": { "type": "number" },
+        "baseAmount": { "type": "number" },
+        "paidBy": { "type": "string" },
+        "dateISO": { "type": "string" },
+        "calendarType": { "type": "string" },
+        "category": { "type": "string" },
+        "notes": { "type": "string" },
+        "receiptUrl": { "type": "string" },
+        "receiptName": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "groupId", "title", "baseAmount", "paidBy"]
+    },
+    "expenseShares": {
+      "title": "ExpenseShare",
+      "description": "Individual breakdown of expense amounts per member",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "expenseId": { "type": "string" },
+        "memberId": { "type": "string" },
+        "shareAmount": { "type": "number" },
+        "splitType": { "type": "string" },
+        "percentage": { "type": "number" },
+        "originalShareAmount": { "type": "number" }
+      },
+      "required": ["id", "expenseId", "memberId", "shareAmount"]
+    },
+    "settlements": {
+      "title": "SettlementRecord",
+      "description": "Debt settlement repayment transactions between members",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "groupId": { "type": "string" },
+        "fromMemberId": { "type": "string" },
+        "toMemberId": { "type": "string" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string" },
+        "dateISO": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "groupId", "fromMemberId", "toMemberId", "amount"]
+    },
+    "inviteCodes": {
+      "title": "InviteCodeReservation",
+      "description": "Reservation and quick resolution index for 6-character group invite codes",
+      "type": "object",
+      "properties": {
+        "groupId": { "type": "string" },
+        "groupName": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["groupId", "createdBy"]
+    },
+    "recovery": {
+      "title": "RecoveryRecord",
+      "description": "Hashed recovery verifier for zero-knowledge account restoration",
+      "type": "object",
+      "properties": {
+        "verifierHash": { "type": "string" },
+        "uid": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["verifierHash", "uid"]
+    },
+    "securityProfiles": {
+      "title": "SecurityProfile",
+      "description": "User security configuration metadata",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "hasRecoveryCode": { "type": "boolean" },
+        "recoveryCreatedAt": { "type": "string" },
+        "hasPasskey": { "type": "boolean" },
+        "passkeyCreatedAt": { "type": "string" },
+        "passkeyCredentialId": { "type": "string" },
+        "lastBackupAt": { "type": "string" }
+      },
+      "required": ["uid"]
+    }
+  },
+  "firestore": {
+    "/groups/{groupId}": {
+      "schema": { "$ref": "#/entities/groups" },
+      "description": "User-accessible expense sharing groups"
+    },
+    "/members/{memberId}": {
+      "schema": { "$ref": "#/entities/members" },
+      "description": "Participants in expense sharing groups"
+    },
+    "/userDirectory/{username}": {
+      "schema": { "$ref": "#/entities/userDirectory" },
+      "description": "Unique username index for registered Splitzy users"
+    },
+    "/groupMembers/{id}": {
+      "schema": { "$ref": "#/entities/groupMembers" },
+      "description": "Group membership mappings"
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/expenses" },
+      "description": "Shared group expenses"
+    },
+    "/expenseShares/{shareId}": {
+      "schema": { "$ref": "#/entities/expenseShares" },
+      "description": "Individual member split shares"
+    },
+    "/settlements/{settlementId}": {
+      "schema": { "$ref": "#/entities/settlements" },
+      "description": "Debt settlement repayment transactions"
+    },
+    "/inviteCodes/{code}": {
+      "schema": { "$ref": "#/entities/inviteCodes" },
+      "description": "Invite code reservation index for joining groups"
+    },
+    "/recovery/{verifierHash}": {
+      "schema": { "$ref": "#/entities/recovery" },
+      "description": "Hashed recovery verifiers"
+    },
+    "/securityProfiles/{uid}": {
+      "schema": { "$ref": "#/entities/securityProfiles" },
+      "description": "User security configuration metadata"
+    }
+  }
+}
