@@ -77,9 +77,9 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
         <button
           id="header-pwa-install-btn"
           onClick={handleInstallClick}
-          className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-xl bg-[var(--success-subtle)] text-[var(--success-text)] border border-[var(--success-border)] transition-colors cursor-pointer ${className}`}
-          title={deferredPrompt ? 'Install Splitzy to your desktop or device' : 'Add to Home Screen'}
-          aria-label="Install Splitzy App"
+          className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-xl bg-[#63E6BE]/20 text-[#101D2D] dark:text-[#63E6BE] border border-[#63E6BE]/40 transition-colors cursor-pointer ${className}`}
+          title={deferredPrompt ? 'Install Splitze to your desktop or device' : 'Add to Home Screen'}
+          aria-label="Install Splitze App"
         >
           <Download className="w-3.5 h-3.5 shrink-0" />
           <span className="hidden sm:inline">Install App</span>
@@ -97,7 +97,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
               <div className="flex items-center gap-2">
                 <Share className="w-4 h-4 text-[var(--brand-text)]" />
                 <h3 className="text-sm font-bold text-[var(--text-primary)]">
-                  Install Splitzy on iPhone / iPad
+                  Install Splitze on iPhone / iPad
                 </h3>
               </div>
               <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
@@ -125,11 +125,11 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
           <div className="flex items-center gap-2">
             <Smartphone className="w-4 h-4 text-[var(--brand-text)]" />
             <h4 className="text-xs font-semibold text-[var(--text-primary)]">
-              Splitzy Mobile & Desktop PWA
+              Splitze Mobile &amp; Desktop PWA
             </h4>
           </div>
           <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
-            Install Splitzy as a fast, native-like app on your device for instant offline receipt logging and calculation access.
+            Install Splitze as a fast, native-like app on your device for instant offline receipt logging and calculation access.
           </p>
         </div>
 

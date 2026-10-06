@@ -618,7 +618,7 @@ export function subscribeToUserCloudSync(
                     name: gm.memberName,
                     username: gm.memberUsername,
                     avatar: gm.memberAvatar || '👤',
-                    color: gm.memberColor || '#670B27',
+                    color: gm.memberColor || '#101D2D',
                     uid: gm.memberUid,
                     groupId: gm.groupId,
                     createdAt: new Date().toISOString(),
@@ -1017,7 +1017,7 @@ export async function cloudRegisterOrUpdateUserProfile(
       if (data.memberId !== member.id && data.uid !== effectiveUid) {
         return {
           success: false,
-          error: `Username "@${cleanUsername}" is already taken by another Splitzy user. Please choose a different unique ID.`,
+          error: `Username "@${cleanUsername}" is already taken by another Splitze user. Please choose a different unique ID.`,
         };
       }
     }
@@ -1039,7 +1039,7 @@ export async function cloudRegisterOrUpdateUserProfile(
         uid: effectiveUid,
         name: updatedMember.name,
         avatar: updatedMember.avatar,
-        color: updatedMember.color || '#670B27',
+        color: updatedMember.color || '#101D2D',
         updatedAt: new Date().toISOString(),
       })
     );
@@ -1127,7 +1127,7 @@ export async function cloudLookupRegisteredUser(
 
     return {
       found: false,
-      message: `User "${trimmed}" was not found in the Splitzy database. Make sure they have installed Splitzy and registered their unique @username, or invite them via the Group Invite Code / QR Code.`,
+      message: `User "${trimmed}" was not found in the Splitze database. Make sure they have installed Splitze and registered their unique @username, or invite them via the Group Invite Code / QR Code.`,
     };
   } catch {
     return {

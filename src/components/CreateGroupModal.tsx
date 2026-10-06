@@ -28,14 +28,14 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
     ? {
         ...currentUserMember,
         avatar: currentUserMember.avatar || '👨‍💻',
-        color: currentUserMember.color || '#7A0022',
+        color: currentUserMember.color || '#101D2D',
         isOwner: true,
       }
     : {
         id: `m_owner_${Date.now()}`,
         name: 'Me',
         avatar: '👨‍💻',
-        color: '#7A0022',
+        color: '#101D2D',
         createdAt: new Date().toISOString(),
         isOwner: true,
       };
@@ -321,7 +321,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
                 </button>
               </div>
               <p className="text-[10px] text-[var(--ink-muted)]">
-                Only registered Splitzy users in the database can be added by <code className="font-mono">@username</code>, or invite them later via the group invite code.
+                Only registered Splitze users in the database can be added by <code className="font-mono">@username</code>, or invite them later via the group invite code.
               </p>
             </div>
           </div>

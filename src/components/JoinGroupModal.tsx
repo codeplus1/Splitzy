@@ -95,7 +95,7 @@ export const JoinGroupModal: React.FC<JoinGroupModalProps> = ({
                 .catch(err => setErrorMessage(err.message));
             }
           } else {
-            setErrorMessage('No valid Splitzy QR code detected in the selected image.');
+            setErrorMessage('No valid Splitze QR code detected in the selected image.');
           }
         } catch {
           setErrorMessage('Could not scan QR code from image.');

@@ -146,7 +146,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
 
   // Generate shareable WhatsApp/SMS summary
   const handleCopySummary = () => {
-    let text = `📊 *Splitzy: ${group.name}*\n`;
+    let text = `📊 *Splitze: ${group.name}*\n`;
     text += `💰 Total Expenses: ${formatMoney(totalGroupSpent, group.baseCurrency)}\n`;
     text += `👥 Members: ${members.map(m => m.name).join(', ')}\n\n`;
 
@@ -857,7 +857,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                 </button>
               </div>
               <p className="text-[10px] text-[var(--ink-muted)]">
-                Only users who have Splitzy and a registered unique <code className="font-mono text-[var(--accent)]">@username</code> in the database can be added, or they can join using invite code <strong>#{group.inviteCode}</strong>.
+                Only users who have Splitze and a registered unique <code className="font-mono text-[var(--accent)]">@username</code> in the database can be added, or they can join using invite code <strong>#{group.inviteCode}</strong>.
               </p>
             </form>
 

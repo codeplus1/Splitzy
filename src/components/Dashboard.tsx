@@ -15,6 +15,7 @@ import { translate } from '../core/i18n';
 import { formatMoney } from '../core/currency';
 import { calculateMemberBalances } from '../core/calculation';
 import { MemberAvatar } from './MemberAvatar';
+import { SplitzeLogo } from './SplitzeLogo';
 
 interface DashboardProps {
   groups: Group[];
@@ -92,7 +93,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const primaryCurrencyEntry = currencyList[0] || [groups[0]?.baseCurrency || 'CAD', { net: 0, paid: 0, share: 0 }];
   const [primaryCurrency, primaryTotals] = primaryCurrencyEntry;
 
-  // Splitzy Hero when no groups exist
+  // Splitze Hero when no groups exist
   if (groups.length === 0) {
     return (
       <div id="welcome-hero-container" className="space-y-8">
@@ -101,18 +102,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
             {/* Left Copy */}
             <div className="lg:col-span-7 space-y-4">
-              <span className="inline-block text-[11px] font-semibold tracking-wide text-[var(--accent)]">
-                {isFrench ? 'Amis · colocs · couples' : 'Friends · roommates · couples'}
-              </span>
+              {/* Full Logo + Secondary Tagline */}
+              <div className="space-y-1.5">
+                <SplitzeLogo variant="horizontal" size="md" />
+                <p className="text-xs font-semibold tracking-wide text-[#087F5B] dark:text-[#63E6BE]">
+                  Split smart. Stay even.
+                </p>
+              </div>
 
               <h1 className="text-2xl sm:text-3xl font-bold font-display text-[var(--ink)] tracking-tight leading-[1.15]">
-                {isFrench ? 'On sépare la facture. On garde le moment.' : 'Split the bill. Keep the moment.'}
+                {isFrench ? 'Partagez intelligemment. Restez quittes.' : 'Split smart. Stay even.'}
               </h1>
 
               <p className="text-xs sm:text-[13px] text-[var(--ink-secondary)] leading-relaxed max-w-xl">
                 {isFrench
-                  ? 'Splitzy suit les dépenses que vous partagez avec vos amis, vos colocs ou votre moitié. Scannez un reçu, partagez à votre façon et réglez sans calcul mental.'
-                  : 'Splitzy tracks the expenses you share with friends, roommates, or your partner. Scan a receipt, split it your way, and settle up — no spreadsheets, no mental math.'}
+                  ? 'Splitze suit les dépenses que vous partagez avec vos amis, vos colocs ou votre moitié. Scannez un reçu, partagez à votre façon et réglez sans calcul mental.'
+                  : 'Splitze tracks the expenses you share with friends, roommates, or travel groups. Scan a receipt, split it your way, and settle up — no spreadsheets, no mental math.'}
               </p>
 
               {/* Call to Actions */}
@@ -146,7 +151,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </p>
             </div>
 
-            {/* Right: Splitzy Simulated Interactive Receipt Frame */}
+            {/* Right: Splitze Simulated Interactive Receipt Frame */}
             <div className="lg:col-span-5">
               <div className="ui-subcard relative p-4 overflow-hidden">
                 <div className="scan-beam"></div>
@@ -187,11 +192,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   </div>
                 </div>
 
-                <div className="mt-2.5 p-2 rounded-lg bg-[var(--accent-soft)] border border-[var(--accent-border)] flex items-center justify-between text-[11px] text-[var(--accent)]">
-                  <span className="font-medium tnum">
+                {/* Mint Green surface with Dark Navy text (#101D2D) for WCAG AA+ contrast */}
+                <div className="mt-2.5 p-2 rounded-lg bg-[#63E6BE] border border-[#38D9A9] flex items-center justify-between text-[11px] text-[#101D2D]">
+                  <span className="font-bold tnum">
                     {isFrench ? 'Partagé en 3 — 34,00 $ chacun' : 'Split 3 ways — $34.00 each'}
                   </span>
-                  <Check className="w-3.5 h-3.5 text-[var(--accent)]" />
+                  <Check className="w-3.5 h-3.5 text-[#101D2D]" />
                 </div>
               </div>
               <p className="text-[11px] text-[var(--ink-muted)] text-center mt-2 italic">
@@ -209,16 +215,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   return (
     <div className="space-y-4 sm:space-y-5">
-      {/* Top Banner: Compact Deep Wine / Faded Rose-Blended Burgundy Card */}
-      <div className="bg-gradient-to-br from-[#2B0814] via-[#4A1228] to-[#7A2346] dark:from-[#220610] dark:via-[#3B0E20] dark:to-[#631B38] rounded-xl px-3.5 py-[25px] sm:px-4 sm:py-[27px] text-white shadow-[0_8px_24px_rgba(90,20,48,0.18)] relative overflow-hidden border border-[#7E2B4B]/60">
-        {/* Soft Faded Pink / Rose Ambient Glow Blend */}
+      {/* Top Banner: Splitze Primary Navy (#101D2D) & Mint Green (#63E6BE) Fintech Summary Card */}
+      <div className="bg-gradient-to-br from-[#101D2D] via-[#152436] to-[#0B1420] rounded-xl px-4 py-5 sm:px-5 sm:py-6 text-white shadow-[0_8px_24px_rgba(16,29,45,0.2)] relative overflow-hidden border border-[#63E6BE]/25">
+        {/* Mint Green Ambient Glow Blend */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -top-12 -right-10 w-56 h-56 rounded-full bg-[#F7A8B7]/20 blur-2xl"
+          className="pointer-events-none absolute -top-12 -right-10 w-56 h-56 rounded-full bg-[#63E6BE]/15 blur-2xl"
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -bottom-14 left-1/3 w-48 h-36 rounded-full bg-[#EDA6B4]/15 blur-2xl"
+          className="pointer-events-none absolute -bottom-14 left-1/3 w-48 h-36 rounded-full bg-[#63E6BE]/10 blur-2xl"
         />
 
         <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -226,17 +232,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <div className="space-y-2">
             {/* Header Row: OVERALL NET BALANCE */}
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[10px] uppercase tracking-[0.06em] font-bold text-[#DEC2CA]">
+              <span className="text-[10px] uppercase tracking-[0.06em] font-bold text-[#8B9AAF]">
                 {translate(language, 'overallBalance')}
               </span>
             </div>
 
-            {/* Compact Amount Row: Rs 0.00 All balances settled up! */}
-            <div className="flex items-baseline gap-2 flex-wrap">
-              <div className="text-lg sm:text-xl font-bold tracking-tight text-[#FFD4DF] tnum amount-val leading-none">
+            {/* Compact Amount Row */}
+            <div className="flex items-baseline gap-2.5 flex-wrap">
+              <div className="text-xl sm:text-2xl font-bold tracking-tight text-[#63E6BE] tnum amount-val leading-none">
                 {formatMoney(Math.abs(primaryTotals.net), primaryCurrency, language)}
               </div>
-              <span className="text-[11px] font-medium text-[#E5C4CE]">
+              <span className="text-xs font-medium text-[#FFFFFF]/85">
                 {groups.length === 0
                   ? 'No active groups'
                   : isPositive
@@ -250,13 +256,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
             {/* Secondary currencies if any */}
             {isMultiCurrency && (
               <div className="flex items-center gap-1.5 pt-0.5 flex-wrap">
-                <span className="text-[10px] text-[#DEC2CA] font-medium">
+                <span className="text-[10px] text-[#8B9AAF] font-medium">
                   {isFrench ? 'Autres devises :' : 'Other currencies:'}
                 </span>
                 {currencyList.slice(1).map(([curr, totals]) => (
                   <span
                     key={curr}
-                    className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[#381221]/85 text-[#FFD4DF] border border-[#7A354E] tnum amount-val"
+                    className="text-[10px] font-semibold px-2 py-0.5 rounded bg-[#152436] text-[#63E6BE] border border-[#63E6BE]/30 tnum amount-val"
                   >
                     {totals.net > 0 ? '+' : ''}
                     {formatMoney(totals.net, curr, language)}
@@ -267,9 +273,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           {/* Right / Bottom Compact Pill: Total Paid */}
-          <div className="bg-[#34101E]/80 backdrop-blur-xs rounded-lg px-2.5 py-1.5 border border-[#75324A] inline-flex items-center sm:flex-col sm:items-end justify-between gap-2 sm:gap-0.5 self-start sm:self-auto shrink-0">
-            <div className="flex items-center gap-1 text-[#DFBBC6] text-[10px]">
-              <TrendingUp className="w-3 h-3 text-[#F78CA7]" />
+          <div className="bg-[#152436]/90 backdrop-blur-xs rounded-lg px-3 py-2 border border-[#63E6BE]/25 inline-flex items-center sm:flex-col sm:items-end justify-between gap-2 sm:gap-0.5 self-start sm:self-auto shrink-0">
+            <div className="flex items-center gap-1 text-[#8B9AAF] text-[10px]">
+              <TrendingUp className="w-3 h-3 text-[#63E6BE]" />
               <span className="font-medium">{translate(language, 'memberStatsPaid')}</span>
             </div>
             <div className="text-xs sm:text-sm font-bold text-white tnum amount-val tracking-tight">
@@ -423,7 +429,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     <span
                       className={`text-xs sm:text-sm font-bold tnum amount-val ${
                         userNet > 0.005
-                          ? 'text-[var(--accent)]'
+                          ? 'text-[#087F5B] dark:text-[#63E6BE]'
                           : userNet < -0.005
                           ? 'text-rose-600 dark:text-rose-400'
                           : 'text-[var(--ink-muted)]'

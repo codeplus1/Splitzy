@@ -22,12 +22,12 @@ export default defineConfig(() => {
         ],
         manifest: {
           id: '/',
-          name: 'Splitzy — Split & Track Shared Costs',
-          short_name: 'Splitzy',
+          name: 'Splitze — Split smart. Stay even.',
+          short_name: 'Splitze',
           description:
-            'Split the bill. Keep the moment. Track shared expenses with friends, roommates, or travel groups. Scan receipts, split four ways, and settle up easily.',
-          theme_color: '#240815',
-          background_color: '#FAFAFB',
+            'Split smart. Stay even. Modern expense-sharing for friends, roommates, and travel groups. Scan receipts, split costs your way, and settle balances effortlessly.',
+          theme_color: '#101D2D',
+          background_color: '#F5F7FA',
           display: 'standalone',
           orientation: 'portrait-primary',
           start_url: '/',

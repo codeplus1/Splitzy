@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { Sparkles, ArrowRight, User, Upload, Trash2, Camera, AtSign } from 'lucide-react';
 import { SupportedLanguage } from '../types';
 import { MemberAvatar } from './MemberAvatar';
+import { SplitzeLogo } from './SplitzeLogo';
 import { processAvatarImage } from '../core/receipt';
 import { normalizeUsername, generateDefaultUsername } from '../services/firebase';
 
@@ -18,14 +19,14 @@ interface UserOnboardingModalProps {
 }
 
 const AVATAR_OPTIONS = ['👨‍💻', '👩‍💻', '🧗', '👩‍🎨', '📸', '🎒', '✈️', '🎸', '🍜', '☕', '🏕️', '🌟'];
-const COLOR_OPTIONS = ['#670B27', '#059669', '#2563eb', '#d97706', '#7c3aed', '#dc2626', '#0891b2'];
+const COLOR_OPTIONS = ['#101D2D', '#0CA678', '#2563eb', '#d97706', '#7c3aed', '#dc2626', '#0891b2'];
 
 export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   isOpen,
   initialName = '',
   initialUsername = '',
   initialAvatar = '👨‍💻',
-  initialColor = '#670B27',
+  initialColor = '#101D2D',
   isEditing = false,
   onSaveUser,
   onClose,
@@ -121,40 +122,32 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
         className="ui-modal-card max-w-md"
         onClick={e => e.stopPropagation()}
       >
-        {/* Top Burgundy Header */}
-        <div className="bg-[var(--brand-primary)] dark:bg-[#240B16] p-4 sm:p-5 text-white border-b border-white/10">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-[10px] bg-gradient-to-b from-[#6E0D25] to-[#3B0412] border border-[#7D1831] text-white flex flex-col items-center justify-center shadow-2xs shrink-0">
-              <div className="relative leading-none">
-                <span className="font-sans font-extrabold text-sm text-white tracking-tight">
-                  S
-                </span>
-                <span className="absolute -top-0.5 -right-1.5 text-[7px] text-[#EDA6B4]">✦</span>
+        {/* Top Splitze Navy Header */}
+        <div className="bg-gradient-to-br from-[#101D2D] via-[#152436] to-[#0B1420] p-4 sm:p-5 text-white border-b border-[#63E6BE]/20">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <SplitzeLogo variant="mark" size={40} />
+              <div>
+                <h2 className="inline-flex items-center gap-1.5 text-sm sm:text-base font-bold font-display tracking-tight text-white leading-snug">
+                  <Sparkles className="w-3.5 h-3.5 text-[#63E6BE]" />
+                  <span>
+                    {isEditing
+                      ? isFrench
+                        ? 'Profil Utilisateur'
+                        : 'Your Profile'
+                      : isFrench
+                      ? 'Bienvenue sur Splitze'
+                      : 'Welcome to Splitze'}
+                  </span>
+                </h2>
+                <p className="text-xs font-medium text-[#8B9AAF] mt-0.5 leading-snug">
+                  {isEditing
+                    ? isFrench
+                      ? 'Modifier votre profil'
+                      : 'Update your profile'
+                    : 'Split smart. Stay even.'}
+                </p>
               </div>
-              <span className="text-[6px] font-bold tracking-tight text-white/90">
-                Splitzy
-              </span>
-            </div>
-            <div>
-              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#F7A8B7]">
-                <Sparkles className="w-3 h-3" />
-                {isEditing
-                  ? isFrench
-                    ? 'Profil Utilisateur'
-                    : 'Your Profile'
-                  : isFrench
-                  ? 'Bienvenue sur Splitzy'
-                  : 'Welcome to Splitzy'}
-              </span>
-              <h2 className="text-base font-semibold font-display tracking-tight text-white leading-snug">
-                {isEditing
-                  ? isFrench
-                    ? 'Modifier votre profil'
-                    : 'Update your profile'
-                  : isFrench
-                  ? 'Comment vous appelez-vous ?'
-                  : "What's your name?"}
-              </h2>
             </div>
           </div>
         </div>
@@ -376,8 +369,8 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                     ? 'Enregistrer'
                     : 'Save Profile'
                   : isFrench
-                  ? 'Continuer vers Splitzy'
-                  : 'Continue to Splitzy'}
+                  ? 'Continuer vers Splitze'
+                  : 'Continue to Splitze'}
               </span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>

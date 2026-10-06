@@ -33,7 +33,7 @@ export const ShareGroupModal: React.FC<ShareGroupModalProps> = ({
         width: 256,
         margin: 2,
         color: {
-          dark: '#141113',
+          dark: '#101D2D',
           light: '#FFFFFF',
         },
       })
@@ -60,8 +60,8 @@ export const ShareGroupModal: React.FC<ShareGroupModalProps> = ({
     if (navigator.share) {
       try {
         await navigator.share({
-          title: `Join ${group.name} on Splitzy`,
-          text: `Join our group "${group.name}" on Splitzy to track shared expenses together:`,
+          title: `Join ${group.name} on Splitze`,
+          text: `Join our group "${group.name}" on Splitze (Split smart. Stay even.) to track shared expenses together:`,
           url: shareUrl,
         });
       } catch {

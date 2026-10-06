@@ -369,7 +369,7 @@ IMPORTANT:
                   <div className="text-xs space-y-1 text-[var(--text-primary)]">
                     <p className="font-semibold text-sm">Instant Account Recovery Anywhere</p>
                     <p className="text-[var(--text-secondary)] leading-relaxed">
-                      Because Splitzy requires <strong>no password, no email, and no phone number</strong>, your cryptographically generated 20-character recovery code is the key to restoring your account on another phone, laptop, or browser.
+                      Because Splitze requires <strong>no password, no email, and no phone number</strong>, your cryptographically generated 20-character recovery code is the key to restoring your account on another phone, laptop, or browser.
                     </p>
                     <p className="text-[var(--brand-text)] text-xs font-medium pt-0.5">
                       Zero-Knowledge: Only a SHA-256 hash verifier is saved to Firestore. Your raw recovery code is never exposed on the cloud.

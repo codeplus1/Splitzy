@@ -954,7 +954,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `splitzy-backup-${new Date().toISOString().split('T')[0]}.json`;
+    a.download = `splitze-backup-${new Date().toISOString().split('T')[0]}.json`;
     a.click();
     URL.revokeObjectURL(url);
     showToast('Data exported as JSON file!', 'success');
@@ -1054,7 +1054,7 @@ export default function App() {
           name: gm.memberName,
           username: gm.memberUsername,
           avatar: gm.memberAvatar || '👤',
-          color: gm.memberColor || '#670B27',
+          color: gm.memberColor || '#101D2D',
           uid: gm.memberUid,
           groupId: gm.groupId,
           createdAt: new Date().toISOString(),
@@ -1156,7 +1156,7 @@ export default function App() {
             : '')
         }
         initialAvatar={currentUserMember?.avatar || '👨‍💻'}
-        initialColor={currentUserMember?.color || '#670B27'}
+        initialColor={currentUserMember?.color || '#101D2D'}
         isEditing={!needsOnboarding && isEditProfileOpen}
         onSaveUser={handleSaveUserProfile}
         onClose={() => setIsEditProfileOpen(false)}
@@ -1289,6 +1289,18 @@ export default function App() {
 
       {/* Offline Connectivity Indicator */}
       <OfflineIndicator />
+
+      {/* Splitze Branded Footer */}
+      <footer className="max-w-5xl w-full mx-auto px-4 sm:px-6 py-6 border-t border-[var(--border)] flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-[var(--ink-muted)]">
+        <div className="flex items-center gap-2">
+          <span className="font-bold text-[var(--ink)] tracking-tight">Splitze</span>
+          <span className="text-[var(--border-strong)]">•</span>
+          <span className="font-medium text-[#8B9AAF]">Split smart. Stay even.</span>
+        </div>
+        <span className="text-[11px] text-[#8B9AAF]">
+          © {new Date().getFullYear()} Splitze
+        </span>
+      </footer>
 
       {/* Toast Notifications */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />

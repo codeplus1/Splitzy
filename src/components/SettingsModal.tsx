@@ -330,7 +330,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </span>
                   </div>
                   <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
-                    Require a 4-digit PIN to unlock Splitzy whenever you open the app or lock it manually.
+                    Require a 4-digit PIN to unlock Splitze whenever you open the app or lock it manually.
                   </p>
                 </div>
 
@@ -362,7 +362,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <p className="text-[11px] text-[var(--text-secondary)]">
                     {language === 'fr'
                       ? 'Verrouille automatiquement après inactivité'
-                      : 'Automatically lock Splitzy after inactivity'}
+                      : 'Automatically lock Splitze after inactivity'}
                   </p>
                 </div>
 

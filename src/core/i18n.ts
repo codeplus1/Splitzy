@@ -93,9 +93,9 @@ export interface TranslationDictionary {
 
 export const TRANSLATIONS: Record<SupportedLanguage, TranslationDictionary> = {
   en: {
-    appName: 'Splitzy',
+    appName: 'Splitze',
     appSubtitle: 'Split & Track Shared Costs',
-    tagline: 'Split the bill. Keep the moment.',
+    tagline: 'Split smart. Stay even.',
     dashboard: 'Dashboard',
     groups: 'Groups',
     createGroup: 'Create Group',
@@ -184,9 +184,9 @@ export const TRANSLATIONS: Record<SupportedLanguage, TranslationDictionary> = {
   },
 
   fr: {
-    appName: 'Splitzy',
+    appName: 'Splitze',
     appSubtitle: 'Partager et suivre les dépenses',
-    tagline: 'On sépare la facture. On garde le moment.',
+    tagline: 'Split smart. Stay even.',
     dashboard: 'Tableau de bord',
     groups: 'Groupes',
     createGroup: 'Créer un groupe',

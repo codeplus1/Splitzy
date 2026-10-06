@@ -17,14 +17,14 @@ const SIZE_MAP = {
 };
 
 const DEFAULT_COLORS = [
-  '#059669', // Emerald
+  '#101D2D', // Primary Navy
+  '#0CA678', // Mint-Emerald
   '#2563eb', // Blue
+  '#0891b2', // Cyan
+  '#4f46e5', // Indigo
   '#d97706', // Amber
   '#7c3aed', // Purple
-  '#dc2626', // Red
-  '#0891b2', // Cyan
-  '#db2777', // Pink
-  '#4b5563', // Gray
+  '#475569', // Slate
 ];
 
 function getFallbackColor(name: string): string {

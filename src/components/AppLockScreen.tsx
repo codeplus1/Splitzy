@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Lock, Delete, ShieldCheck } from 'lucide-react';
 import { SupportedLanguage } from '../types';
+import { SplitzeLogo } from './SplitzeLogo';
 
 const APP_LOCK_PIN_HASH_KEY = 'splitzy_app_lock_pin_hash';
 const APP_LOCK_ENABLED_KEY = 'splitzy_app_lock_enabled';
@@ -188,22 +189,15 @@ export const AppLockScreen: React.FC<AppLockScreenProps> = ({
       className="fixed inset-0 z-[100] bg-[var(--bg)] flex flex-col items-center justify-center p-4 select-none"
     >
       <div className="w-full max-w-xs bg-[var(--surface)] border border-[var(--border)] rounded-3xl p-6 shadow-[var(--shadow-modal)] flex flex-col items-center space-y-6">
-        {/* Splitzy Brand & Lock Badge */}
+        {/* Splitze Brand & Lock Badge */}
         <div className="flex flex-col items-center text-center space-y-2">
-          <div className="w-12 h-12 rounded-[14px] bg-gradient-to-b from-[#6E0D25] to-[#3B0412] border border-[#7D1831] text-white flex flex-col items-center justify-center shadow-md">
-            <div className="relative leading-none">
-              <span className="font-sans font-extrabold text-xl text-white tracking-tight">
-                S
-              </span>
-              <span className="absolute -top-0.5 -right-2 text-[9px] text-[#EDA6B4]">✦</span>
-            </div>
-            <span className="text-[8px] font-bold tracking-tight text-white/90 mt-0.5">
-              Splitzy
-            </span>
-          </div>
+          <SplitzeLogo variant="mark" size={52} />
           <h1 className="text-base font-bold font-display text-[var(--ink)] tracking-tight">
-            {isFrench ? 'Splitzy est verrouillé' : 'Splitzy App Lock'}
+            {isFrench ? 'Splitze est verrouillé' : 'Splitze App Lock'}
           </h1>
+          <span className="text-[11px] font-semibold text-[#8B9AAF]">
+            Split smart. Stay even.
+          </span>
           <p className="text-xs text-[var(--ink-secondary)]">
             {userName
               ? isFrench
