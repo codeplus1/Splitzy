@@ -261,6 +261,12 @@ export function reconcileAppState(
     settlements: SettlementRecord[];
   }
 ): AppState {
+  // If the user is currently logged out on this device (no active userProfile and no currentUserId),
+  // do NOT populate local state from background cloud listeners until they log in or register.
+  if (!local.userProfile && !local.currentUserId) {
+    return local;
+  }
+
   const deletedExpenseSet = new Set(local.deletedExpenseIds || []);
   const deletedGroupSet = new Set(local.deletedGroupIds || []);
   const pendingGroupSet = new Set(local.pendingGroupIds || []);

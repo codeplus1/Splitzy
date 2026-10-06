@@ -231,8 +231,9 @@ export default function App() {
   }, [currentUser?.uid, appState.userProfile?.id, appState.currentUserId]);
 
   // 2. Real-time synchronization strictly SCOPED to the authenticated user's groups
+  const isUserLoggedIn = Boolean(appState.userProfile?.id || appState.currentUserId);
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || !isUserLoggedIn) return;
 
     const unsubscribe = subscribeToUserCloudSync(
       currentUser.uid,
@@ -297,7 +298,7 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, [currentUser]);
+  }, [currentUser, isUserLoggedIn]);
 
   // 3. Handle incoming join link (?join=CODE) and client-side group route (/group/:id or ?group=id)
   const pendingJoinCodeRef = useRef<string | null>(null);

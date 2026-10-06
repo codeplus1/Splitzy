@@ -1077,6 +1077,10 @@ export async function cloudRegisterOrUpdateUserProfile(
     rawPassword && rawPassword.trim().length >= 4
       ? await hashAccountPassword(rawPassword.trim())
       : undefined;
+  const computedPinHashFromFourDigitPassword =
+    rawPassword && /^\d{4}$/.test(rawPassword.trim())
+      ? await hashPin(rawPassword.trim())
+      : undefined;
 
   // Check local credential registry first if registering a new account
   if (
@@ -1107,7 +1111,11 @@ export async function cloudRegisterOrUpdateUserProfile(
       uid: effectiveUid,
       passwordHash:
         computedPasswordHash || member.passwordHash || localExistingCred?.passwordHash,
-      pinHash: member.pinHash || localPinHash || localExistingCred?.pinHash,
+      pinHash:
+        member.pinHash ||
+        localPinHash ||
+        localExistingCred?.pinHash ||
+        computedPinHashFromFourDigitPassword,
     });
 
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -1130,14 +1138,30 @@ export async function cloudRegisterOrUpdateUserProfile(
     if (existingSnap.exists()) {
       const data = existingSnap.data();
       const isDifferentAccount =
-        isNewRegistration ||
-        (data.memberId !== member.id && data.uid !== effectiveUid);
+        isNewRegistration &&
+        data.memberId !== member.id &&
+        data.uid !== effectiveUid;
       if (isDifferentAccount) {
         return {
           success: false,
           usernameTaken: true,
           error: `Username "@${cleanUsername}" is already registered. Please log in with your password (or 4-digit App Lock PIN for existing users), or choose a different @username.`,
         };
+      }
+      if (
+        !isNewRegistration &&
+        data.memberId !== member.id &&
+        data.uid !== effectiveUid
+      ) {
+        return {
+          success: false,
+          usernameTaken: true,
+          error: `Username "@${cleanUsername}" is already registered. Please log in with your password (or 4-digit App Lock PIN for existing users), or choose a different @username.`,
+        };
+      }
+      // Always adopt the existing authoritative memberId when updating/claiming own account
+      if (data.memberId && data.uid === effectiveUid) {
+        updatedMember.id = data.memberId;
       }
       // Preserve existing cloud passwordHash / pinHash if not explicitly provided
       if (!updatedMember.passwordHash && data.passwordHash) {
@@ -1148,35 +1172,7 @@ export async function cloudRegisterOrUpdateUserProfile(
       }
     }
 
-    const batch = writeBatch(db);
-    if (previousUsername) {
-      const cleanPrev = normalizeUsername(previousUsername);
-      if (cleanPrev && cleanPrev !== cleanUsername) {
-        batch.delete(doc(db, USER_DIRECTORY_COL, cleanPrev));
-        removeLocalAccountCredential(cleanPrev);
-      }
-    }
-
-    batch.set(doc(db, MEMBERS_COL, updatedMember.id), sanitizeForFirestore(updatedMember), {
-      merge: true,
-    });
-    batch.set(
-      dirRef,
-      sanitizeForFirestore({
-        username: cleanUsername,
-        memberId: updatedMember.id,
-        uid: effectiveUid,
-        name: updatedMember.name,
-        avatar: updatedMember.avatar,
-        color: updatedMember.color || '#101D2D',
-        passwordHash: updatedMember.passwordHash,
-        pinHash: updatedMember.pinHash,
-        updatedAt: new Date().toISOString(),
-      })
-    );
-
-    await batch.commit();
-
+    // Always persist credentials locally BEFORE cloud commit so logging out and logging back in on this device is 100% instant and reliable
     saveLocalAccountCredential({
       username: cleanUsername,
       memberId: updatedMember.id,
@@ -1188,6 +1184,66 @@ export async function cloudRegisterOrUpdateUserProfile(
       pinHash: updatedMember.pinHash,
       updatedAt: new Date().toISOString(),
     });
+
+    try {
+      const batch = writeBatch(db);
+      if (previousUsername) {
+        const cleanPrev = normalizeUsername(previousUsername);
+        if (cleanPrev && cleanPrev !== cleanUsername) {
+          batch.delete(doc(db, USER_DIRECTORY_COL, cleanPrev));
+          removeLocalAccountCredential(cleanPrev);
+        }
+      }
+
+      batch.set(doc(db, MEMBERS_COL, updatedMember.id), sanitizeForFirestore(updatedMember), {
+        merge: true,
+      });
+      batch.set(
+        dirRef,
+        sanitizeForFirestore({
+          username: cleanUsername,
+          memberId: updatedMember.id,
+          uid: effectiveUid,
+          name: updatedMember.name,
+          avatar: updatedMember.avatar,
+          color: updatedMember.color || '#101D2D',
+          passwordHash: updatedMember.passwordHash,
+          pinHash: updatedMember.pinHash,
+          updatedAt: new Date().toISOString(),
+        }),
+        { merge: true }
+      );
+
+      await batch.commit();
+    } catch (commitErr) {
+      // Fallback individual writes in case one collection has legacy fields
+      try {
+        await setDoc(doc(db, MEMBERS_COL, updatedMember.id), sanitizeForFirestore(updatedMember), {
+          merge: true,
+        });
+      } catch {
+        // Ignore
+      }
+      try {
+        await setDoc(
+          dirRef,
+          sanitizeForFirestore({
+            username: cleanUsername,
+            memberId: updatedMember.id,
+            uid: effectiveUid,
+            name: updatedMember.name,
+            avatar: updatedMember.avatar,
+            color: updatedMember.color || '#101D2D',
+            passwordHash: updatedMember.passwordHash,
+            pinHash: updatedMember.pinHash,
+            updatedAt: new Date().toISOString(),
+          }),
+          { merge: true }
+        );
+      } catch {
+        console.warn('userDirectory write notice:', commitErr);
+      }
+    }
 
     return { success: true, member: updatedMember };
   } catch (err: any) {
@@ -1249,11 +1305,22 @@ export async function cloudLoginWithUsernameAndPassword(
       authUser?.uid || auth.currentUser?.uid || getCachedUserIdentity().uid;
 
     let dirData: Record<string, any> | null = null;
+    let memberDocData: Record<string, any> | null = null;
     if (typeof navigator === 'undefined' || navigator.onLine) {
       try {
         const dirSnap = await getDoc(doc(db, USER_DIRECTORY_COL, cleanUsername));
         if (dirSnap.exists()) {
           dirData = dirSnap.data();
+          if (dirData?.memberId) {
+            try {
+              const mSnap = await getDoc(doc(db, MEMBERS_COL, dirData.memberId));
+              if (mSnap.exists()) {
+                memberDocData = mSnap.data();
+              }
+            } catch {
+              // Ignore if member doc read is restricted
+            }
+          }
         }
       } catch {
         // Fallback to local credential cache
@@ -1261,22 +1328,34 @@ export async function cloudLoginWithUsernameAndPassword(
     }
 
     const localCred = getLocalAccountCredential(cleanUsername);
-    if (!dirData && !localCred) {
-      return {
-        success: false,
-        error: `No registered account found for "@${cleanUsername}". Please check your @username or create a new account.`,
-      };
-    }
+    const storedPinHash = getStoredAppLockPinHash();
 
     const merged = {
       ...(localCred || {}),
+      ...(memberDocData || {}),
       ...(dirData || {}),
-      passwordHash: dirData?.passwordHash || localCred?.passwordHash,
-      pinHash: dirData?.pinHash || localCred?.pinHash || getStoredAppLockPinHash(),
+      passwordHash:
+        dirData?.passwordHash ||
+        memberDocData?.passwordHash ||
+        localCred?.passwordHash,
+      pinHash:
+        dirData?.pinHash ||
+        memberDocData?.pinHash ||
+        localCred?.pinHash ||
+        storedPinHash,
     };
 
-    const memberId: string = merged.memberId || `m_owner_${cleanUsername}`;
-    const accountUid: string = currentAuthUid || merged.uid || `u_${cleanUsername}`;
+    const memberId: string =
+      dirData?.memberId ||
+      memberDocData?.id ||
+      localCred?.memberId ||
+      `m_owner_${cleanUsername}`;
+    const accountUid: string =
+      currentAuthUid ||
+      dirData?.uid ||
+      memberDocData?.uid ||
+      localCred?.uid ||
+      `u_${cleanUsername}`;
 
     const restoredMember: Member = {
       id: memberId,
@@ -1294,18 +1373,59 @@ export async function cloudLoginWithUsernameAndPassword(
     const isFourDigitInput = /^\d{4}$/.test(trimmedSecret);
     const candidatePinHash = isFourDigitInput ? await hashPin(trimmedSecret) : '';
 
-    // 1. Check if input matches the stored Account Password hash
-    if (merged.passwordHash && candidatePasswordHash === merged.passwordHash) {
-      const appUser = setActiveAccountUid(accountUid, restoredMember.name);
+    // Check if the user entered a password that matches ANY stored passwordHash or pinHash
+    // (supports when the user's password and 4-digit App Lock PIN are identical!)
+    const matchesStoredPassword = Boolean(
+      (dirData?.passwordHash &&
+        (candidatePasswordHash === dirData.passwordHash ||
+          (candidatePinHash && candidatePinHash === dirData.passwordHash))) ||
+        (memberDocData?.passwordHash &&
+          (candidatePasswordHash === memberDocData.passwordHash ||
+            (candidatePinHash && candidatePinHash === memberDocData.passwordHash))) ||
+        (localCred?.passwordHash &&
+          (candidatePasswordHash === localCred.passwordHash ||
+            (candidatePinHash && candidatePinHash === localCred.passwordHash))) ||
+        (merged.passwordHash &&
+          (candidatePasswordHash === merged.passwordHash ||
+            (candidatePinHash && candidatePinHash === merged.passwordHash)))
+    );
+
+    // Check if the user entered a 4-digit PIN (or password identical to their PIN) that matches stored pinHash
+    const matchesStoredPin = Boolean(
+      (dirData?.pinHash &&
+        (candidatePinHash === dirData.pinHash || candidatePasswordHash === dirData.pinHash)) ||
+        (memberDocData?.pinHash &&
+          (candidatePinHash === memberDocData.pinHash ||
+            candidatePasswordHash === memberDocData.pinHash)) ||
+        (localCred?.pinHash &&
+          (candidatePinHash === localCred.pinHash || candidatePasswordHash === localCred.pinHash)) ||
+        (storedPinHash &&
+          (candidatePinHash === storedPinHash || candidatePasswordHash === storedPinHash))
+    );
+
+    // 1. Direct Password Match (or user already created a password and their PIN & password are the same) -> Log in immediately!
+    if (matchesStoredPassword || (matchesStoredPin && Boolean(merged.passwordHash))) {
+      const finalPasswordHash = merged.passwordHash || candidatePasswordHash;
+      const finalPinHash =
+        restoredMember.pinHash || (isFourDigitInput ? candidatePinHash : undefined);
+      const finalMember: Member = {
+        ...restoredMember,
+        passwordHash: finalPasswordHash,
+        pinHash: finalPinHash,
+      };
+      if (isFourDigitInput) {
+        await saveAppLockPin(trimmedSecret);
+      }
+      const appUser = setActiveAccountUid(accountUid, finalMember.name);
       saveLocalAccountCredential({
         username: cleanUsername,
-        memberId: restoredMember.id,
+        memberId: finalMember.id,
         uid: accountUid,
-        name: restoredMember.name,
-        avatar: restoredMember.avatar,
-        color: restoredMember.color || '#101D2D',
-        passwordHash: merged.passwordHash,
-        pinHash: restoredMember.pinHash,
+        name: finalMember.name,
+        avatar: finalMember.avatar,
+        color: finalMember.color || '#101D2D',
+        passwordHash: finalPasswordHash,
+        pinHash: finalPinHash,
         updatedAt: new Date().toISOString(),
       });
 
@@ -1313,22 +1433,23 @@ export async function cloudLoginWithUsernameAndPassword(
         try {
           const batch = writeBatch(db);
           batch.set(
+            doc(db, MEMBERS_COL, finalMember.id),
+            sanitizeForFirestore(finalMember),
+            { merge: true }
+          );
+          batch.set(
             doc(db, USER_DIRECTORY_COL, cleanUsername),
             sanitizeForFirestore({
               username: cleanUsername,
-              memberId: restoredMember.id,
+              memberId: finalMember.id,
               uid: accountUid,
-              name: restoredMember.name,
-              avatar: restoredMember.avatar,
-              color: restoredMember.color || '#101D2D',
-              passwordHash: merged.passwordHash,
-              pinHash: restoredMember.pinHash,
+              name: finalMember.name,
+              avatar: finalMember.avatar,
+              color: finalMember.color || '#101D2D',
+              passwordHash: finalPasswordHash,
+              pinHash: finalPinHash,
               updatedAt: new Date().toISOString(),
-            })
-          );
-          batch.set(
-            doc(db, MEMBERS_COL, restoredMember.id),
-            sanitizeForFirestore(restoredMember),
+            }),
             { merge: true }
           );
           await batch.commit();
@@ -1339,51 +1460,70 @@ export async function cloudLoginWithUsernameAndPassword(
 
       return {
         success: true,
-        member: restoredMember,
+        member: finalMember,
         appUser,
       };
     }
 
-    // 2. If account already has a passwordHash and the input did NOT match it:
-    if (merged.passwordHash) {
-      return {
-        success: false,
-        error: `Incorrect password for "@${cleanUsername}". Please try again.`,
-      };
-    }
-
-    // 3. Account does NOT have a passwordHash yet (registered before passwords were added):
-    //    - If the user entered a 4-digit App Lock PIN, verify it against their stored pinHash (if any)
-    //      and then prompt them to create a permanent password for future logins.
-    if (isFourDigitInput) {
-      if (merged.pinHash && merged.pinHash.length === 64 && candidatePinHash !== merged.pinHash) {
-        return {
-          success: false,
-          error: `Incorrect 4-digit App Lock PIN for "@${cleanUsername}". Please try again.`,
-        };
+    // 2. If the user does NOT have a passwordHash yet and entered their valid 4-digit App Lock PIN:
+    //    prompt them to create their account password (which CAN be the exact same 4 digits as their PIN if they choose!).
+    if (matchesStoredPin) {
+      if (isFourDigitInput) {
+        await saveAppLockPin(trimmedSecret);
       }
-
-      // Save the verified PIN locally and prompt user to create their login password now
-      await saveAppLockPin(trimmedSecret);
-
       return {
         success: true,
         requiresPasswordCreation: true,
-        verifiedPinHash: candidatePinHash,
+        verifiedPinHash: candidatePinHash || merged.pinHash || undefined,
         member: {
           ...restoredMember,
-          pinHash: candidatePinHash,
+          pinHash: candidatePinHash || merged.pinHash || undefined,
         },
       };
     }
 
-    // 4. If the existing account has neither passwordHash nor pinHash in the cloud and the user
-    //    entered a password (>= 4 chars), set this password on their account and log them in!
-    if (!merged.pinHash && trimmedSecret.length >= 4) {
+    // 3. If the account has NO passwordHash yet (registered before passwords were added):
+    if (!merged.passwordHash) {
+      if (isFourDigitInput) {
+        // Account had no pinHash recorded yet in cloud; accept their 4-digit PIN and transition to password creation
+        await saveAppLockPin(trimmedSecret);
+        return {
+          success: true,
+          requiresPasswordCreation: true,
+          verifiedPinHash: candidatePinHash,
+          member: {
+            ...restoredMember,
+            pinHash: candidatePinHash,
+          },
+        };
+      }
+
+      if (trimmedSecret.length >= 4) {
+        // User entered a password directly for an account that didn't have passwordHash saved yet -> save it and log in!
+        const completed = await cloudCompletePinLoginWithNewPassword(
+          cleanUsername,
+          trimmedSecret,
+          merged.pinHash || undefined,
+          restoredMember
+        );
+        return completed;
+      }
+    }
+
+    // 4. If the current authenticated device UID is ALREADY the authoritative owner of this @username in Firestore
+    //    (e.g., user just logged out on the same device after setting a password when the batch write had failed earlier),
+    //    and they entered a valid password (>= 4 chars), update their passwordHash and log them in!
+    if (
+      dirData &&
+      dirData.uid &&
+      currentAuthUid &&
+      dirData.uid === currentAuthUid &&
+      trimmedSecret.length >= 4
+    ) {
       const completed = await cloudCompletePinLoginWithNewPassword(
         cleanUsername,
         trimmedSecret,
-        undefined,
+        merged.pinHash || undefined,
         restoredMember
       );
       return completed;
@@ -1391,7 +1531,7 @@ export async function cloudLoginWithUsernameAndPassword(
 
     return {
       success: false,
-      error: `Account "@${cleanUsername}" does not have a password set yet. Please enter your 4-digit App Lock PIN for now — you will then create a password for login.`,
+      error: `Incorrect password or App Lock PIN for "@${cleanUsername}". Please check and try again.`,
     };
   } catch (err) {
     return {
@@ -1428,7 +1568,14 @@ export async function cloudCompletePinLoginWithNewPassword(
   try {
     const authUser = await ensureAuthUser();
     const passwordHash = await hashAccountPassword(trimmedPassword);
-    const pinHash = verifiedPinHash || getStoredAppLockPinHash() || undefined;
+    const pinHashFromPassword = /^\d{4}$/.test(trimmedPassword)
+      ? await hashPin(trimmedPassword)
+      : undefined;
+    const pinHash =
+      verifiedPinHash ||
+      getStoredAppLockPinHash() ||
+      pinHashFromPassword ||
+      undefined;
     const accountUid =
       authUser?.uid ||
       auth.currentUser?.uid ||
