@@ -1,0 +1,99 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string &&
+        id.size() > 0 &&
+        id.size() <= 128 &&
+        id.matches('^[a-zA-Z0-9_.\\-]+$');
+    }
+
+    // Verified Group Membership:
+    // Strictly checks Firestore (/databases/(default)/documents/groups/$(groupId))
+    // so only current, authorized group members (or the group owner) can access receipts.
+    function isFirestoreGroupMember(groupId) {
+      return isSignedIn() &&
+        isValidId(groupId) &&
+        firestore.exists(/databases/(default)/documents/groups/$(groupId)) && (
+          firestore.get(/databases/(default)/documents/groups/$(groupId)).data.createdBy == request.auth.uid ||
+          (
+            'memberUserIds' in firestore.get(/databases/(default)/documents/groups/$(groupId)).data &&
+            request.auth.uid in firestore.get(/databases/(default)/documents/groups/$(groupId)).data.memberUserIds
+          )
+        );
+    }
+
+    function isAuthorizedGroupReceiptReader(groupId) {
+      return isSignedIn() && isValidId(groupId) && isFirestoreGroupMember(groupId);
+    }
+
+    function isAllowedReceiptContentType() {
+      return request.resource != null &&
+        request.resource.contentType is string && (
+          request.resource.contentType == 'image/jpeg' ||
+          request.resource.contentType == 'image/png' ||
+          request.resource.contentType == 'image/webp' ||
+          request.resource.contentType == 'application/pdf'
+        );
+    }
+
+    function isWithinReceiptSizeLimit() {
+      return request.resource != null &&
+        request.resource.size > 0 &&
+        request.resource.size <= 5 * 1024 * 1024;
+    }
+
+    function isReceiptOwnerMetadataValid(groupId) {
+      return request.resource != null &&
+        request.resource.metadata != null &&
+        'uploadedBy' in request.resource.metadata &&
+        request.resource.metadata.uploadedBy == request.auth.uid &&
+        'groupId' in request.resource.metadata &&
+        request.resource.metadata.groupId == groupId;
+    }
+
+    function isAuthorizedGroupReceiptUploader(groupId) {
+      return isSignedIn() && isValidId(groupId) && isFirestoreGroupMember(groupId);
+    }
+
+    // Group receipts path: /receipts/{groupId}/{userId}/{fileName}
+    // - Downloads (`get`) require verified live Firestore group membership.
+    // - Directory listing (`list`) is strictly forbidden (`false`).
+    // - Uploads/updates (`create`, `update`) require owner (`request.auth.uid == userId`), verified Firestore group membership,
+    //   strict MIME type (`image/jpeg`, `image/png`, `image/webp`, `application/pdf`), and <= 5 MB size limit.
+    // - Deletes (`delete`) require owner (`request.auth.uid == userId`) and verified Firestore group membership.
+    match /receipts/{groupId}/{userId}/{fileName} {
+      allow get: if isSignedIn() &&
+        isValidId(groupId) &&
+        isValidId(userId) &&
+        isValidId(fileName) &&
+        isAuthorizedGroupReceiptReader(groupId);
+      allow list: if false;
+      allow create, update: if isSignedIn() &&
+        isValidId(groupId) &&
+        isValidId(userId) &&
+        isValidId(fileName) &&
+        request.auth.uid == userId &&
+        isAuthorizedGroupReceiptUploader(groupId) &&
+        isAllowedReceiptContentType() &&
+        isWithinReceiptSizeLimit() &&
+        isReceiptOwnerMetadataValid(groupId);
+      allow delete: if isSignedIn() &&
+        isValidId(groupId) &&
+        isValidId(userId) &&
+        isValidId(fileName) &&
+        request.auth.uid == userId &&
+        isFirestoreGroupMember(groupId);
+    }
+
+    // Default deny all other Storage paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -18,11 +18,74 @@ export function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+export const MAX_RECEIPT_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
+export const ALLOWED_RECEIPT_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'application/pdf',
+]);
+
+/**
+ * Sanitizes a receipt file name so it strictly conforms to storage.rules `isValidId`
+ * (`^[a-zA-Z0-9_.\-]+$`, 1..128 chars) and prevents path traversal.
+ */
+export function sanitizeReceiptStorageFileName(rawFileName: string): string {
+  const cleaned = rawFileName
+    .trim()
+    .replace(/[^a-zA-Z0-9_.-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^\.+/, '')
+    .slice(0, 100);
+  return cleaned || 'receipt.jpg';
+}
+
+/**
+ * Builds the canonical Firebase Storage path `/receipts/{groupId}/{userId}/{fileName}`
+ * required by `storage.rules`.
+ */
+export function buildReceiptStoragePath(
+  groupId: string,
+  userId: string,
+  fileName: string,
+  timestamp: number = Date.now()
+): string {
+  const safeFile = sanitizeReceiptStorageFileName(fileName);
+  return `receipts/${groupId}/${userId}/${timestamp}_${safeFile}`;
+}
+
+/**
+ * Validates that a candidate receipt file meets size and MIME-type security rules.
+ */
+export function validateReceiptFile(file: File): { valid: boolean; error?: string } {
+  if (!file || file.size <= 0) {
+    return { valid: false, error: 'Receipt file is empty.' };
+  }
+  if (file.size > MAX_RECEIPT_FILE_SIZE_BYTES) {
+    return {
+      valid: false,
+      error: `Receipt file exceeds maximum allowed size of 5 MB (${formatFileSize(file.size)}).`,
+    };
+  }
+  if (!ALLOWED_RECEIPT_MIME_TYPES.has(file.type)) {
+    return {
+      valid: false,
+      error: 'Unsupported receipt file type. Only JPEG, PNG, WebP, and PDF files are allowed.',
+    };
+  }
+  return { valid: true };
+}
+
 /**
  * Resizes and compresses an image client-side to ensure it stays within
  * storage and network constraints while maintaining high legibility.
  */
 export async function processReceiptFile(file: File): Promise<ProcessedReceipt> {
+  const validation = validateReceiptFile(file);
+  if (!validation.valid) {
+    throw new Error(validation.error);
+  }
+
   const isImage = file.type.startsWith('image/');
 
   if (!isImage) {

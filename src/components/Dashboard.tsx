@@ -131,10 +131,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <button
                     id="hero-join-group-btn"
                     onClick={onJoinGroupClick}
-                    className="ui-btn-secondary group px-3.5 py-2 text-xs"
+                    className="ui-btn-secondary group px-3.5 py-2 text-xs whitespace-nowrap shrink-0"
                   >
-                    <KeyRound className="w-3.5 h-3.5 text-[var(--accent)] group-hover:rotate-12 transition-transform" />
-                    <span>{isFrench ? 'Rejoindre' : 'Join'}</span>
+                    <KeyRound className="w-3.5 h-3.5 text-[var(--accent)] shrink-0 group-hover:rotate-12 transition-transform" />
+                    <span className="whitespace-nowrap">{isFrench ? 'Rejoindre un groupe' : 'Join Group'}</span>
                   </button>
                 )}
               </div>
@@ -209,48 +209,34 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   return (
     <div className="space-y-4 sm:space-y-5">
-      {/* Top Banner: Compact Deep Wine / Dark Burgundy Card */}
-      <div className="bg-gradient-to-br from-[#23060E] via-[#2D0814] to-[#42091B] dark:from-[#1A040B] dark:via-[#240610] dark:to-[#350716] rounded-xl p-3.5 sm:p-4 text-white shadow-[0_6px_20px_rgba(45,8,20,0.14)] relative overflow-hidden border border-[#4A1224]">
+      {/* Top Banner: Compact Deep Wine / Faded Rose-Blended Burgundy Card */}
+      <div className="bg-gradient-to-br from-[#2B0814] via-[#4A1228] to-[#7A2346] dark:from-[#220610] dark:via-[#3B0E20] dark:to-[#631B38] rounded-xl px-3.5 py-[25px] sm:px-4 sm:py-[27px] text-white shadow-[0_8px_24px_rgba(90,20,48,0.18)] relative overflow-hidden border border-[#7E2B4B]/60">
+        {/* Soft Faded Pink / Rose Ambient Glow Blend */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -top-12 -right-10 w-56 h-56 rounded-full bg-[#F7A8B7]/20 blur-2xl"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -bottom-14 left-1/3 w-48 h-36 rounded-full bg-[#EDA6B4]/15 blur-2xl"
+        />
+
         <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          {/* Left Side: Label + User Pill + Balance Amount */}
-          <div className="space-y-1.5">
-            {/* Header Row: OVERALL NET BALANCE • [ 👤 Saroj ✏ ] */}
+          {/* Left Side: Label + Balance Amount */}
+          <div className="space-y-2">
+            {/* Header Row: OVERALL NET BALANCE */}
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[10px] uppercase tracking-[0.06em] font-bold text-[#A89299]">
+              <span className="text-[10px] uppercase tracking-[0.06em] font-bold text-[#DEC2CA]">
                 {translate(language, 'overallBalance')}
               </span>
-              <span className="text-[#785B64] text-[10px]" aria-hidden="true">•</span>
-
-              {/* User pill with avatar and edit pencil icon */}
-              <button
-                type="button"
-                onClick={() => onEditUserClick?.()}
-                className="group inline-flex items-center gap-1 bg-[#2A151B]/90 hover:bg-[#3A1C25] hover:border-[#6B3B4A] hover:-translate-y-[1px] active:translate-y-0 active:scale-95 pl-1 pr-2 py-0.5 rounded-full border border-[#4D2A35] text-[10px] font-semibold text-white transition-all cursor-pointer shadow-2xs"
-                title="Edit your profile"
-              >
-                <MemberAvatar
-                  name={currentMember.name}
-                  avatar={currentMember.avatar}
-                  color={currentMember.color}
-                  size="xs"
-                  className="w-3.5 h-3.5 text-[8px]"
-                />
-                <span className="text-white tracking-tight">{currentMember.name}</span>
-                {currentMember.username && (
-                  <span className="text-[#EDA6B4] font-mono text-[9px]">
-                    @{currentMember.username}
-                  </span>
-                )}
-                <Pencil className="w-2.5 h-2.5 text-[#B89CA4] group-hover:text-white transition-colors" />
-              </button>
             </div>
 
             {/* Compact Amount Row: Rs 0.00 All balances settled up! */}
             <div className="flex items-baseline gap-2 flex-wrap">
-              <div className="text-lg sm:text-xl font-bold tracking-tight text-[#EDA6B4] tnum amount-val leading-none">
+              <div className="text-lg sm:text-xl font-bold tracking-tight text-[#FFD4DF] tnum amount-val leading-none">
                 {formatMoney(Math.abs(primaryTotals.net), primaryCurrency, language)}
               </div>
-              <span className="text-[11px] font-medium text-[#B89CA4]">
+              <span className="text-[11px] font-medium text-[#E5C4CE]">
                 {groups.length === 0
                   ? 'No active groups'
                   : isPositive
@@ -264,13 +250,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
             {/* Secondary currencies if any */}
             {isMultiCurrency && (
               <div className="flex items-center gap-1.5 pt-0.5 flex-wrap">
-                <span className="text-[10px] text-[#A89299] font-medium">
+                <span className="text-[10px] text-[#DEC2CA] font-medium">
                   {isFrench ? 'Autres devises :' : 'Other currencies:'}
                 </span>
                 {currencyList.slice(1).map(([curr, totals]) => (
                   <span
                     key={curr}
-                    className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[#2A151B] text-[#EDA6B4] border border-[#4D2A35] tnum amount-val"
+                    className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[#381221]/85 text-[#FFD4DF] border border-[#7A354E] tnum amount-val"
                   >
                     {totals.net > 0 ? '+' : ''}
                     {formatMoney(totals.net, curr, language)}
@@ -281,9 +267,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
 
           {/* Right / Bottom Compact Pill: Total Paid */}
-          <div className="bg-[#231217]/85 rounded-lg px-2.5 py-1.5 border border-[#462630] inline-flex items-center sm:flex-col sm:items-end justify-between gap-2 sm:gap-0.5 self-start sm:self-auto shrink-0">
-            <div className="flex items-center gap-1 text-[#B0979E] text-[10px]">
-              <TrendingUp className="w-3 h-3 text-[#E36D85]" />
+          <div className="bg-[#34101E]/80 backdrop-blur-xs rounded-lg px-2.5 py-1.5 border border-[#75324A] inline-flex items-center sm:flex-col sm:items-end justify-between gap-2 sm:gap-0.5 self-start sm:self-auto shrink-0">
+            <div className="flex items-center gap-1 text-[#DFBBC6] text-[10px]">
+              <TrendingUp className="w-3 h-3 text-[#F78CA7]" />
               <span className="font-medium">{translate(language, 'memberStatsPaid')}</span>
             </div>
             <div className="text-xs sm:text-sm font-bold text-white tnum amount-val tracking-tight">
@@ -296,9 +282,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
       {/* Active Groups Section */}
       <div className="space-y-3.5">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
             <Users className="w-4 h-4 text-[var(--accent)] shrink-0" />
-            <h2 className="text-base sm:text-lg font-bold text-[var(--ink)] tracking-tight leading-tight">
+            <h2 className="text-sm sm:text-lg font-bold text-[var(--ink)] tracking-tight leading-tight truncate">
               {translate(language, 'activeGroups')}
             </h2>
             <span className="px-2 py-0.5 rounded-full bg-[var(--surface-subtle)] border border-[var(--border)] text-[11px] font-bold font-mono text-[var(--ink)] flex items-center justify-center shrink-0">
@@ -306,26 +292,26 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             {onJoinGroupClick && (
               <button
                 id="dashboard-join-group-btn"
                 onClick={onJoinGroupClick}
-                className="ui-btn-secondary group px-3 py-1.5 text-xs"
+                className="ui-btn-secondary group px-3 py-1.5 text-xs whitespace-nowrap shrink-0"
                 title="Join a private group with invite code"
               >
                 <KeyRound className="w-3.5 h-3.5 text-[var(--accent)] shrink-0 group-hover:rotate-12 transition-transform" />
-                <span>{isFrench ? 'Rejoindre' : 'Join'}</span>
+                <span className="whitespace-nowrap">{isFrench ? 'Rejoindre un groupe' : 'Join Group'}</span>
               </button>
             )}
 
             <button
               id="dashboard-new-group-btn"
               onClick={onCreateGroupClick}
-              className="ui-btn-primary group px-3.5 py-1.5 text-xs"
+              className="ui-btn-primary group px-3.5 py-1.5 text-xs whitespace-nowrap shrink-0"
             >
               <Plus className="w-3.5 h-3.5 shrink-0 group-hover:rotate-90 transition-transform duration-200" />
-              <span>{translate(language, 'newGroup')}</span>
+              <span className="whitespace-nowrap">{translate(language, 'newGroup')}</span>
             </button>
           </div>
         </div>

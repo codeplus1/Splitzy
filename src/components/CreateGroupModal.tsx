@@ -73,7 +73,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
               m.username.toLowerCase() === foundMember.username.toLowerCase())
         )
       ) {
-        setErrorMessage(`@${foundMember.username || foundMember.name} is already in this list.`);
+        setErrorMessage(`${foundMember.name} is already in this list.`);
         return;
       }
 
@@ -263,11 +263,6 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
                     <span className="text-xs font-semibold text-[var(--ink)] truncate">
                       {m.name}
                     </span>
-                    {m.username && (
-                      <span className="text-[10px] font-mono text-[var(--accent)] bg-[var(--accent-soft)] px-1.5 py-0.2 rounded border border-[var(--accent-border)]">
-                        @{m.username}
-                      </span>
-                    )}
                     {m.isOwner && (
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent-border)]">
                         {isFrench ? 'Vous' : 'You'}

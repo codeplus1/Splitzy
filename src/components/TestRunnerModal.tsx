@@ -16,6 +16,7 @@ import {
 } from '../core/calculation';
 import { getDefaultExchangeRate } from '../core/currency';
 import { generateSecureRecoveryCode, hashRecoveryCode } from '../core/security';
+import { runSecurityRulesVerificationSuite } from '../core/securityRulesVerifier';
 
 export interface TestRunnerModalProps {
   onClose: () => void;
@@ -99,6 +100,14 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({ onClose, langu
       status: 'pending',
       durationMs: 0,
     },
+    {
+      id: 'TC-SEC-02',
+      suite: 'Firestore Zero-Trust Rules',
+      name: 'Authorized & Unauthorized Access Control Audit',
+      description: 'Verifies group isolation, invite-code batch join, UID ownership, and anti-enumeration across all 10 collections',
+      status: 'pending',
+      durationMs: 0,
+    },
   ]);
 
   const runAllTests = async () => {
@@ -177,6 +186,11 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({ onClose, langu
           if (code.length !== 24 || !code.includes('-')) throw new Error(`Unexpected code format: ${code}`);
           const hash = await hashRecoveryCode(code);
           if (hash.length !== 64) throw new Error(`Expected 64-char sha256 hex, got ${hash.length}`);
+        } else if (tc.id === 'TC-SEC-02') {
+          const audit = runSecurityRulesVerificationSuite();
+          if (!audit.passed) {
+            throw new Error(audit.failures.join('; '));
+          }
         }
 
         tc.status = 'passed';

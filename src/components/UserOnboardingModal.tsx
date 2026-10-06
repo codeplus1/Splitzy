@@ -124,14 +124,14 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
         {/* Top Burgundy Header */}
         <div className="bg-[var(--brand-primary)] dark:bg-[#240B16] p-4 sm:p-5 text-white border-b border-white/10">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/20 flex flex-col items-center justify-center shrink-0">
+            <div className="w-9 h-9 rounded-[10px] bg-gradient-to-b from-[#6E0D25] to-[#3B0412] border border-[#7D1831] text-white flex flex-col items-center justify-center shadow-2xs shrink-0">
               <div className="relative leading-none">
-                <span className="font-display font-bold text-base text-white tracking-tight">
+                <span className="font-sans font-extrabold text-sm text-white tracking-tight">
                   S
                 </span>
-                <span className="absolute -top-0.5 -right-2 text-[7px] text-[#F7A8B7]">✦</span>
+                <span className="absolute -top-0.5 -right-1.5 text-[7px] text-[#EDA6B4]">✦</span>
               </div>
-              <span className="text-[6px] font-semibold tracking-wider text-[#F7A8B7]">
+              <span className="text-[6px] font-bold tracking-tight text-white/90">
                 Splitzy
               </span>
             </div>

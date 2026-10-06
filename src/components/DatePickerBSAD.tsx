@@ -102,19 +102,21 @@ export const DatePickerBSAD: React.FC<DatePickerBSADProps> = ({
   const bsConversion = !isNaN(curAdDate.getTime()) ? adToBs(curAdDate) : null;
 
   return (
-    <div className="p-3.5 rounded-2xl bg-[var(--surface-subtle)]/75 border border-[var(--border)] space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <label className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)] leading-tight mb-0">
-          <Calendar className="w-4 h-4 text-[var(--accent)] shrink-0" />
-          <span>{mode === 'BS' ? 'मिति (EXPENSE DATE)' : 'EXPENSE DATE'}</span>
+    <div className="p-3 sm:p-3.5 rounded-2xl bg-[var(--surface-subtle)]/75 border border-[var(--border)] space-y-3 overflow-hidden">
+      <div className="flex items-center justify-between gap-2 min-w-0">
+        <label className="flex items-center gap-1.5 text-[11px] sm:text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)] leading-tight mb-0 min-w-0">
+          <Calendar className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[var(--accent)] shrink-0" />
+          <span className="truncate">
+            {mode === 'BS' ? 'मिति (EXPENSE DATE)' : 'EXPENSE DATE'}
+          </span>
         </label>
 
         {/* Toggle between AD (English) and BS (बिक्रम संवत्) */}
-        <div className="inline-flex items-center bg-[var(--surface-hover)]/80 dark:bg-[var(--surface)] border border-[var(--border)] rounded-xl p-1 gap-1 shrink-0">
+        <div className="inline-flex items-center bg-[var(--surface-hover)]/80 dark:bg-[var(--surface)] border border-[var(--border)] rounded-xl p-0.5 sm:p-1 gap-0.5 sm:gap-1 shrink-0 max-w-full">
           <button
             type="button"
             onClick={() => handleModeChange('AD')}
-            className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold leading-tight text-center transition-all cursor-pointer ${
+            className={`px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-lg text-[10px] sm:text-[11px] font-semibold leading-tight text-center whitespace-nowrap transition-all cursor-pointer ${
               mode === 'AD'
                 ? 'bg-[var(--surface)] dark:bg-[var(--surface-subtle)] text-[var(--ink)] shadow-2xs font-bold'
                 : 'text-[var(--ink-secondary)] hover:text-[var(--ink)]'
@@ -125,7 +127,7 @@ export const DatePickerBSAD: React.FC<DatePickerBSADProps> = ({
           <button
             type="button"
             onClick={() => handleModeChange('BS')}
-            className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold leading-tight text-center transition-all cursor-pointer ${
+            className={`px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-lg text-[10px] sm:text-[11px] font-semibold leading-tight text-center whitespace-nowrap transition-all cursor-pointer ${
               mode === 'BS'
                 ? 'bg-[var(--surface)] dark:bg-[var(--surface-subtle)] text-[var(--ink)] shadow-2xs font-bold'
                 : 'text-[var(--ink-secondary)] hover:text-[var(--ink)]'

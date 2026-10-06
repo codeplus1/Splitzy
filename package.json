@@ -8,7 +8,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "npx tsx tests/firestore.rules.test.ts",
+    "test:rules": "npx tsx tests/firestore.rules.test.ts",
+    "test:rules:emulator": "firebase emulators:exec --only firestore,storage --project demo-splitzy-security-test \"npx tsx scripts/runEmulatorSecurityTests.ts\""
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -27,6 +30,7 @@
     "vite": "^6.2.3"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/qrcode": "^1.5.6",

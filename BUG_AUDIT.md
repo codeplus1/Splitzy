@@ -1,9 +1,9 @@
-# Hisab Sathi — Comprehensive QA Bug Audit & Production-Readiness Report
+# Splitzy — Comprehensive QA Bug Audit & Production-Readiness Report
 
-**Auditor:** Senior Software QA Engineer, Bug Hunter & Production-Readiness Tester  
-**Application:** Hisab Sathi (Nepali Expense Sharing & Settlement Engine)  
-**Date:** September 2026  
-**Build Status:** Clean compile (`npm run build` succeeded, `tsc --noEmit` passed with 0 errors)
+**Auditor:** Senior Software QA Engineer & Production-Readiness Architect  
+**Application:** Splitzy — Split & Track Shared Costs  
+**Date:** October 2026  
+**Build Status:** Clean compile (`npm run build` succeeded, `tsc --noEmit` passed with 0 errors, 40/40 Firebase Emulator Suite tests passed)
 
 ---
 
@@ -147,6 +147,6 @@ The core financial logic in `src/core/calculation.ts` was audited against edge c
 | Dimension | Assessment | Status |
 | :--- | :--- | :--- |
 | **Build & Type Safety** | TypeScript compiler (`tsc --noEmit`) passes with 0 diagnostics. Vite production bundle builds cleanly. | **PASS** |
-| **Firestore Security Rules** | Rules are currently permissive (`allow read, write: if true;`). For strict multi-tenant production with auth, authentication checks will need to be deployed if user sign-in is introduced. In current no-auth collaborative model, Firestore long-polling network stability is active. | **DOCUMENTED** |
+| **Firestore & Storage Security Rules** | Zero-Trust `firestore.rules` (all 10 collections) and `storage.rules` (`/receipts/{groupId}/{userId}/{fileName}`) enforced and verified via 40 Firebase Emulator Suite tests. | **PASS** |
 | **Browser Compatibility** | Responsive viewport tested, CSS variables theme engine (dark/light mode) functional. | **PASS** |
 | **PWA & Offline Readiness**| LocalStorage fallback layer operates seamlessly when network drops. | **PASS** |

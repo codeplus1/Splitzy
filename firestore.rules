@@ -1,158 +1,594 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Global Default Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
 
-    // Helper functions
+    // Core Authentication & Context Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
     function incoming() {
       return request.resource.data;
     }
 
-    function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128;
+    function existing() {
+      return resource.data;
     }
 
+    function isValidId(id) {
+      return id is string &&
+        id.size() > 0 &&
+        id.size() <= 128 &&
+        id.matches('^[a-zA-Z0-9_.\\-]+$');
+    }
+
+    function isValidInviteCode(code) {
+      return code is string &&
+        code.size() >= 3 &&
+        code.size() <= 32 &&
+        code.matches('^[A-Z0-9_\\-]+$');
+    }
+
+    function isValidUsernameHandle(username) {
+      return username is string &&
+        username.size() >= 2 &&
+        username.size() <= 30 &&
+        username.matches('^[a-z0-9_.\\-]+$');
+    }
+
+    function isValidVerifierHash(hash) {
+      return hash is string &&
+        hash.size() == 64 &&
+        hash.matches('^[a-fA-F0-9]{64}$');
+    }
+
+    // Group Ownership & Membership Helpers
+    function isGroupOwnerData(data) {
+      return isSignedIn() && (
+        data.createdBy == request.auth.uid ||
+        (
+          'memberUserIds' in data &&
+          data.memberUserIds is list &&
+          request.auth.uid in data.memberUserIds &&
+          (
+            data.memberUserIds.size() == 1 ||
+            !('createdBy' in data) ||
+            data.createdBy == '' ||
+            data.createdBy == 'anonymous' ||
+            data.createdBy.matches('^u_[a-zA-Z0-9_]+$')
+          )
+        )
+      );
+    }
+
+    function isGroupMemberData(data) {
+      return isSignedIn() && (
+        request.auth.uid in data.memberUserIds ||
+        data.createdBy == request.auth.uid
+      );
+    }
+
+    function isGroupOwner(groupId) {
+      return isSignedIn() && isValidId(groupId) && (
+        (
+          exists(/databases/$(database)/documents/groups/$(groupId)) &&
+          isGroupOwnerData(get(/databases/$(database)/documents/groups/$(groupId)).data)
+        ) ||
+        (
+          existsAfter(/databases/$(database)/documents/groups/$(groupId)) &&
+          isGroupOwnerData(getAfter(/databases/$(database)/documents/groups/$(groupId)).data)
+        )
+      );
+    }
+
+    function isGroupOwnerWithCode(groupId, code) {
+      return isSignedIn() && isValidId(groupId) && isValidInviteCode(code) && (
+        (
+          exists(/databases/$(database)/documents/groups/$(groupId)) &&
+          isGroupOwnerData(get(/databases/$(database)/documents/groups/$(groupId)).data) &&
+          get(/databases/$(database)/documents/groups/$(groupId)).data.inviteCode == code
+        ) ||
+        (
+          existsAfter(/databases/$(database)/documents/groups/$(groupId)) &&
+          isGroupOwnerData(getAfter(/databases/$(database)/documents/groups/$(groupId)).data) &&
+          getAfter(/databases/$(database)/documents/groups/$(groupId)).data.inviteCode == code
+        )
+      );
+    }
+
+    function isGroupParticipant(groupId) {
+      return isSignedIn() && isValidId(groupId) && (
+        (
+          exists(/databases/$(database)/documents/groups/$(groupId)) &&
+          isGroupMemberData(get(/databases/$(database)/documents/groups/$(groupId)).data)
+        ) ||
+        (
+          existsAfter(/databases/$(database)/documents/groups/$(groupId)) &&
+          isGroupMemberData(getAfter(/databases/$(database)/documents/groups/$(groupId)).data)
+        )
+      );
+    }
+
+    // Member Ownership & Participant Read Helpers
+    function isMemberProfileOwner(data) {
+      return isSignedIn() &&
+        'uid' in data &&
+        data.uid is string &&
+        data.uid.size() > 0 &&
+        data.uid == request.auth.uid;
+    }
+
+    function isMemberOwner(memberId) {
+      return isSignedIn() && isValidId(memberId) && (
+        (
+          exists(/databases/$(database)/documents/members/$(memberId)) &&
+          isMemberProfileOwner(get(/databases/$(database)/documents/members/$(memberId)).data)
+        ) ||
+        (
+          existsAfter(/databases/$(database)/documents/members/$(memberId)) &&
+          isMemberProfileOwner(getAfter(/databases/$(database)/documents/members/$(memberId)).data)
+        )
+      );
+    }
+
+    function canReadMemberProfile(data) {
+      return isSignedIn() && (
+        data.uid == request.auth.uid ||
+        request.auth.uid in data.memberUserIds ||
+        ('groupId' in data && isGroupParticipant(data.groupId))
+      );
+    }
+
+    // Parent Expense & Share Authorization Helpers
+    function isExpenseParticipant(expenseId) {
+      return isSignedIn() && isValidId(expenseId) && (
+        (
+          exists(/databases/$(database)/documents/expenses/$(expenseId)) &&
+          isGroupParticipant(get(/databases/$(database)/documents/expenses/$(expenseId)).data.groupId)
+        ) ||
+        (
+          existsAfter(/databases/$(database)/documents/expenses/$(expenseId)) &&
+          isGroupParticipant(getAfter(/databases/$(database)/documents/expenses/$(expenseId)).data.groupId)
+        )
+      );
+    }
+
+    function isValidShareExpenseRelation(data) {
+      return isSignedIn() &&
+        isValidId(data.expenseId) && (
+          (
+            exists(/databases/$(database)/documents/expenses/$(data.expenseId)) &&
+            isGroupParticipant(get(/databases/$(database)/documents/expenses/$(data.expenseId)).data.groupId) &&
+            (!('groupId' in data) || data.groupId == get(/databases/$(database)/documents/expenses/$(data.expenseId)).data.groupId)
+          ) ||
+          (
+            existsAfter(/databases/$(database)/documents/expenses/$(data.expenseId)) &&
+            isGroupParticipant(getAfter(/databases/$(database)/documents/expenses/$(data.expenseId)).data.groupId) &&
+            (!('groupId' in data) || data.groupId == getAfter(/databases/$(database)/documents/expenses/$(data.expenseId)).data.groupId)
+          )
+        );
+    }
+
+    function isAuthorizedShareRead(data) {
+      return isSignedIn() && (
+        ('groupId' in data && isGroupParticipant(data.groupId)) ||
+        ('expenseId' in data && isExpenseParticipant(data.expenseId))
+      );
+    }
+
+    // Group Owner Update vs Invite-Code Join Transition
+    function isOwnerGroupUpdate() {
+      return isGroupOwnerData(existing()) &&
+        incoming().id == existing().id &&
+        (
+          incoming().createdBy == existing().createdBy ||
+          incoming().createdBy == request.auth.uid
+        ) &&
+        (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) &&
+        (!('inviteCode' in existing()) || incoming().inviteCode == existing().inviteCode) &&
+        incoming().createdBy in incoming().memberUserIds &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name',
+          'baseCurrency',
+          'preferredCalendar',
+          'language',
+          'memberUserIds',
+          'inviteCode',
+          'reviewNewMembers',
+          'createdBy',
+          'updatedAt'
+        ]);
+    }
+
+    function isValidInviteJoin(groupId) {
+      return isSignedIn() &&
+        !(request.auth.uid in existing().memberUserIds) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['memberUserIds']) &&
+        'memberUserIds' in incoming() &&
+        incoming().memberUserIds is list &&
+        incoming().memberUserIds.size() >= 1 &&
+        incoming().memberUserIds.size() <= 100 &&
+        request.auth.uid in incoming().memberUserIds &&
+        incoming().memberUserIds.hasAll(existing().memberUserIds) &&
+        incoming().memberUserIds.size() == existing().memberUserIds.size() + 1 &&
+        'inviteCode' in existing() &&
+        isValidInviteCode(existing().inviteCode) &&
+        exists(/databases/$(database)/documents/inviteCodes/$(existing().inviteCode)) &&
+        existsAfter(/databases/$(database)/documents/inviteCodes/$(existing().inviteCode)) &&
+        getAfter(/databases/$(database)/documents/inviteCodes/$(existing().inviteCode)).data.groupId == groupId &&
+        getAfter(/databases/$(database)/documents/inviteCodes/$(existing().inviteCode)).data.lastJoinedBy == request.auth.uid;
+    }
+
+    // Schema Blueprints
     function isValidGroup(data) {
-      return data.name is string &&
+      return data.id is string &&
+        isValidId(data.id) &&
+        data.name is string &&
         data.name.size() > 0 &&
         data.name.size() <= 100 &&
         data.baseCurrency is string &&
         data.baseCurrency.size() >= 2 &&
         data.baseCurrency.size() <= 10 &&
-        (!('memberUserIds' in data) || (data.memberUserIds is list && data.memberUserIds.size() <= 100));
+        data.createdBy is string &&
+        data.createdBy.size() > 0 &&
+        data.createdBy.size() <= 128 &&
+        data.memberUserIds is list &&
+        data.memberUserIds.size() >= 1 &&
+        data.memberUserIds.size() <= 100 &&
+        (!('inviteCode' in data) || isValidInviteCode(data.inviteCode));
     }
 
     function isValidMember(data) {
-      return data.name is string &&
+      return data.id is string &&
+        isValidId(data.id) &&
+        data.uid is string &&
+        data.uid.size() > 0 &&
+        data.uid.size() <= 128 &&
+        data.name is string &&
         data.name.size() > 0 &&
-        data.name.size() <= 100;
+        data.name.size() <= 100 &&
+        (!('username' in data) || (data.username is string && data.username.size() >= 2 && data.username.size() <= 40)) &&
+        (!('groupId' in data) || isValidId(data.groupId)) &&
+        (!('memberUserIds' in data) || (data.memberUserIds is list && data.memberUserIds.size() <= 100));
+    }
+
+    function isValidGroupMember(data) {
+      return data.id is string &&
+        isValidId(data.id) &&
+        data.groupId is string &&
+        isValidId(data.groupId) &&
+        data.memberId is string &&
+        isValidId(data.memberId);
     }
 
     function isValidExpense(data) {
-      return data.groupId is string &&
-        data.groupId.size() > 0 &&
-        data.groupId.size() <= 128 &&
+      return data.id is string &&
+        isValidId(data.id) &&
+        data.groupId is string &&
+        isValidId(data.groupId) &&
         data.title is string &&
         data.title.size() > 0 &&
         data.title.size() <= 150 &&
         data.baseAmount is number &&
         data.baseAmount >= 0 &&
-        data.baseAmount <= 1000000000;
+        data.baseAmount <= 1000000000 &&
+        data.paidBy is string &&
+        isValidId(data.paidBy);
     }
 
     function isValidExpenseShare(data) {
-      return data.expenseId is string &&
-        data.expenseId.size() > 0 &&
-        data.expenseId.size() <= 128 &&
+      return data.id is string &&
+        isValidId(data.id) &&
+        data.expenseId is string &&
+        isValidId(data.expenseId) &&
         data.memberId is string &&
-        data.memberId.size() > 0 &&
-        data.memberId.size() <= 128 &&
+        isValidId(data.memberId) &&
         data.shareAmount is number &&
         data.shareAmount >= 0 &&
-        data.shareAmount <= 1000000000;
+        data.shareAmount <= 1000000000 &&
+        (!('groupId' in data) || isValidId(data.groupId));
     }
 
     function isValidSettlement(data) {
-      return data.groupId is string &&
-        data.groupId.size() > 0 &&
-        data.groupId.size() <= 128 &&
+      return data.id is string &&
+        isValidId(data.id) &&
+        data.groupId is string &&
+        isValidId(data.groupId) &&
         data.fromMemberId is string &&
+        isValidId(data.fromMemberId) &&
         data.toMemberId is string &&
+        isValidId(data.toMemberId) &&
         data.fromMemberId != data.toMemberId &&
         data.amount is number &&
         data.amount > 0 &&
         data.amount <= 1000000000;
     }
 
+    function isValidInviteCodeDoc(data) {
+      return data.groupId is string &&
+        isValidId(data.groupId) &&
+        data.createdBy is string &&
+        data.createdBy.size() > 0 &&
+        data.createdBy.size() <= 128 &&
+        (!('groupName' in data) || (data.groupName is string && data.groupName.size() <= 100)) &&
+        (!('lastJoinedBy' in data) || (data.lastJoinedBy is string && data.lastJoinedBy.size() > 0 && data.lastJoinedBy.size() <= 128));
+    }
+
+    function isValidRecovery(data) {
+      return data.keys().hasAll(['verifierHash', 'uid']) &&
+        data.keys().hasOnly(['verifierHash', 'uid', 'createdAt', 'updatedAt']) &&
+        data.verifierHash is string &&
+        isValidVerifierHash(data.verifierHash) &&
+        data.uid is string &&
+        data.uid.size() > 0 &&
+        data.uid.size() <= 128;
+    }
+
+    function isValidSecurityProfile(data) {
+      return data.uid is string &&
+        data.uid.size() > 0 &&
+        data.uid.size() <= 128 &&
+        (!('hasRecoveryCode' in data) || data.hasRecoveryCode is bool) &&
+        (!('recoveryCreatedAt' in data) || data.recoveryCreatedAt is string) &&
+        (!('lastBackupAt' in data) || data.lastBackupAt is string);
+    }
+
+    function isValidUserDirectory(data) {
+      return isValidUsernameHandle(data.username) &&
+        data.memberId is string &&
+        isValidId(data.memberId) &&
+        data.uid is string &&
+        data.uid.size() > 0 &&
+        data.uid.size() <= 128 &&
+        data.name is string &&
+        data.name.size() > 0 &&
+        data.name.size() <= 100 &&
+        data.keys().hasOnly([
+          'username',
+          'memberId',
+          'uid',
+          'name',
+          'avatar',
+          'color',
+          'updatedAt'
+        ]);
+    }
+
     // 1. Groups Collection
+    // - Read/list restricted to group members & owner.
+    // - Create requires creator ownership.
+    // - Update restricted to group owner (for group management) OR atomic invite-code join by a new member.
+    // - Delete restricted strictly to the group owner (`createdBy == request.auth.uid`).
     match /groups/{groupId} {
-      allow get, list: if true;
-      allow create, update: if isValidId(groupId) && isValidGroup(incoming());
-      allow delete: if isValidId(groupId);
+      allow get: if isValidId(groupId) && isGroupMemberData(existing());
+      allow list: if isGroupMemberData(existing());
+      allow create: if isSignedIn() &&
+        isValidId(groupId) &&
+        isValidGroup(incoming()) &&
+        incoming().id == groupId &&
+        incoming().createdBy == request.auth.uid &&
+        request.auth.uid in incoming().memberUserIds;
+      allow update: if isSignedIn() &&
+        isValidId(groupId) &&
+        isValidGroup(incoming()) &&
+        (isOwnerGroupUpdate() || isValidInviteJoin(groupId));
+      allow delete: if isSignedIn() &&
+        isValidId(groupId) &&
+        (resource == null || isGroupOwnerData(existing()));
     }
 
     // 2. Members Collection
+    // - Mandatory `uid` on all documents (no UID-less document creation or modification).
+    // - Read/list restricted to profile owner and co-participants of shared groups.
+    // - Create/update/delete restricted strictly to the profile owner (`uid == request.auth.uid`).
     match /members/{memberId} {
-      allow read: if true;
-      allow create, update: if isValidId(memberId) && isValidMember(incoming());
-      allow delete: if isValidId(memberId);
+      allow get: if isValidId(memberId) && canReadMemberProfile(existing());
+      allow list: if canReadMemberProfile(existing());
+      allow create: if isSignedIn() &&
+        isValidId(memberId) &&
+        isValidMember(incoming()) &&
+        incoming().id == memberId &&
+        isMemberProfileOwner(incoming());
+      allow update: if isSignedIn() &&
+        isValidId(memberId) &&
+        isValidMember(incoming()) &&
+        incoming().id == memberId &&
+        isMemberProfileOwner(existing()) &&
+        isMemberProfileOwner(incoming()) &&
+        (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt);
+      allow delete: if isSignedIn() &&
+        isValidId(memberId) &&
+        (resource == null || isMemberProfileOwner(existing()));
     }
 
     // 3. GroupMembers Collection (Mapping)
+    // - Read/list restricted to participants of the target group.
+    // - Create/update/delete restricted to the group owner OR a verified group participant managing their own member record.
     match /groupMembers/{id} {
-      allow read: if true;
-      allow create, update: if isValidId(id) &&
-        incoming().groupId is string &&
-        incoming().groupId.size() > 0 &&
-        incoming().memberId is string &&
-        incoming().memberId.size() > 0;
-      allow delete: if isValidId(id);
+      allow get: if isSignedIn() && isValidId(id) && isGroupParticipant(existing().groupId);
+      allow list: if isSignedIn() && isGroupParticipant(existing().groupId);
+      allow create: if isSignedIn() &&
+        isValidId(id) &&
+        isValidGroupMember(incoming()) &&
+        incoming().id == id &&
+        isGroupParticipant(incoming().groupId) &&
+        (isGroupOwner(incoming().groupId) || isMemberOwner(incoming().memberId));
+      allow update: if isSignedIn() &&
+        isValidId(id) &&
+        isValidGroupMember(incoming()) &&
+        incoming().id == id &&
+        existing().groupId == incoming().groupId &&
+        existing().memberId == incoming().memberId &&
+        isGroupParticipant(existing().groupId) &&
+        (isGroupOwner(existing().groupId) || isMemberOwner(existing().memberId));
+      allow delete: if isSignedIn() &&
+        isValidId(id) &&
+        (
+          resource == null ||
+          isGroupOwner(existing().groupId) ||
+          isMemberOwner(existing().memberId)
+        );
     }
 
     // 4. Expenses Collection
+    // - Strictly restricted to authenticated participants of the expense's group.
     match /expenses/{expenseId} {
-      allow read: if true;
-      allow create, update: if isValidId(expenseId) && isValidExpense(incoming());
-      allow delete: if isValidId(expenseId);
+      allow get: if isSignedIn() && isValidId(expenseId) && isGroupParticipant(existing().groupId);
+      allow list: if isSignedIn() && isGroupParticipant(existing().groupId);
+      allow create: if isSignedIn() &&
+        isValidId(expenseId) &&
+        isValidExpense(incoming()) &&
+        incoming().id == expenseId &&
+        isGroupParticipant(incoming().groupId);
+      allow update: if isSignedIn() &&
+        isValidId(expenseId) &&
+        isValidExpense(incoming()) &&
+        incoming().id == expenseId &&
+        existing().groupId == incoming().groupId &&
+        isGroupParticipant(existing().groupId);
+      allow delete: if isSignedIn() &&
+        isValidId(expenseId) &&
+        (resource == null || isGroupParticipant(existing().groupId));
     }
 
     // 5. ExpenseShares Collection
+    // - Verified against parent expense's group on every operation.
     match /expenseShares/{shareId} {
-      allow read: if true;
-      allow create, update: if isValidId(shareId) && isValidExpenseShare(incoming());
-      allow delete: if isValidId(shareId);
+      allow get: if isSignedIn() && isValidId(shareId) && isAuthorizedShareRead(existing());
+      allow list: if isSignedIn() && isAuthorizedShareRead(existing());
+      allow create: if isSignedIn() &&
+        isValidId(shareId) &&
+        isValidExpenseShare(incoming()) &&
+        incoming().id == shareId &&
+        isValidShareExpenseRelation(incoming());
+      allow update: if isSignedIn() &&
+        isValidId(shareId) &&
+        isValidExpenseShare(incoming()) &&
+        incoming().id == shareId &&
+        existing().expenseId == incoming().expenseId &&
+        (!('groupId' in existing()) || existing().groupId == incoming().groupId) &&
+        isValidShareExpenseRelation(incoming());
+      allow delete: if isSignedIn() &&
+        isValidId(shareId) &&
+        (resource == null || isAuthorizedShareRead(existing()));
     }
 
     // 6. Settlements Collection
+    // - Strictly restricted to authenticated participants of the settlement's group.
     match /settlements/{settlementId} {
-      allow read: if true;
-      allow create, update: if isValidId(settlementId) && isValidSettlement(incoming());
-      allow delete: if isValidId(settlementId);
+      allow get: if isSignedIn() && isValidId(settlementId) && isGroupParticipant(existing().groupId);
+      allow list: if isSignedIn() && isGroupParticipant(existing().groupId);
+      allow create: if isSignedIn() &&
+        isValidId(settlementId) &&
+        isValidSettlement(incoming()) &&
+        incoming().id == settlementId &&
+        isGroupParticipant(incoming().groupId);
+      allow update: if isSignedIn() &&
+        isValidId(settlementId) &&
+        isValidSettlement(incoming()) &&
+        incoming().id == settlementId &&
+        existing().groupId == incoming().groupId &&
+        isGroupParticipant(existing().groupId);
+      allow delete: if isSignedIn() &&
+        isValidId(settlementId) &&
+        (resource == null || isGroupParticipant(existing().groupId));
     }
 
-    // 7. Invite Codes (Unique reservation index)
+    // 7. Invite Codes
+    // - O(1) authenticated `get` by exact invite code; `list` enumeration forbidden.
+    // - Only the group owner (`createdBy == request.auth.uid`) can create or delete an invite code matching the group's `inviteCode`.
+    // - Non-owners can only update `lastJoinedBy` / `lastJoinedAt` when redeeming the code in an atomic join batch.
     match /inviteCodes/{code} {
-      allow get: if true;
-      allow list: if false; // Disallow enumerating all invite codes in the system
-      allow create, update: if isValidId(code) &&
-        incoming().groupId is string &&
-        incoming().groupId.size() > 0 &&
-        incoming().groupId.size() <= 128;
-      allow delete: if isValidId(code);
+      allow get: if isSignedIn() && isValidInviteCode(code);
+      allow list: if false;
+      allow create: if isSignedIn() &&
+        isValidInviteCode(code) &&
+        isValidInviteCodeDoc(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        isGroupOwnerWithCode(incoming().groupId, code);
+      allow update: if isSignedIn() &&
+        isValidInviteCode(code) &&
+        isValidInviteCodeDoc(incoming()) &&
+        existing().groupId == incoming().groupId &&
+        existing().createdBy == incoming().createdBy && (
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly(['lastJoinedBy', 'lastJoinedAt']) &&
+            incoming().lastJoinedBy == request.auth.uid
+          ) ||
+          isGroupOwnerWithCode(existing().groupId, code)
+        );
+      allow delete: if isSignedIn() &&
+        isValidInviteCode(code) &&
+        (
+          resource == null ||
+          existing().createdBy == request.auth.uid ||
+          isGroupOwner(existing().groupId)
+        );
     }
 
-    // 8. Account Recovery (Hashed verifiers)
+    // 8. Account Recovery
+    // - Strictly isolated to the owning UID (`uid == request.auth.uid`) for get, create, update, and delete; `list` forbidden.
+    // - Prevents any cross-user recovery-data disclosure or tampering.
     match /recovery/{verifierHash} {
-      allow get: if true;
-      allow list: if false; // Disallow enumerating recovery hashes
-      allow create, update: if isValidId(verifierHash) &&
-        incoming().uid is string &&
-        incoming().uid.size() > 0 &&
-        incoming().uid.size() <= 128;
-      allow delete: if isValidId(verifierHash);
+      allow get: if isSignedIn() &&
+        isValidVerifierHash(verifierHash) &&
+        existing().uid == request.auth.uid;
+      allow list: if false;
+      allow create: if isSignedIn() &&
+        isValidVerifierHash(verifierHash) &&
+        isValidRecovery(incoming()) &&
+        incoming().verifierHash == verifierHash &&
+        incoming().uid == request.auth.uid;
+      allow update: if isSignedIn() &&
+        isValidVerifierHash(verifierHash) &&
+        isValidRecovery(incoming()) &&
+        incoming().verifierHash == verifierHash &&
+        existing().uid == request.auth.uid &&
+        incoming().uid == request.auth.uid;
+      allow delete: if isSignedIn() &&
+        isValidVerifierHash(verifierHash) &&
+        (resource == null || existing().uid == request.auth.uid);
     }
 
-    // 9. Security Profiles
+    // 9. Security Profiles (Strictly isolated to owner UID)
     match /securityProfiles/{uid} {
-      allow read, write: if isValidId(uid);
+      allow get: if isSignedIn() && isValidId(uid) && request.auth.uid == uid;
+      allow list: if false;
+      allow create, update: if isSignedIn() &&
+        isValidId(uid) &&
+        request.auth.uid == uid &&
+        isValidSecurityProfile(incoming()) &&
+        incoming().uid == request.auth.uid;
+      allow delete: if isSignedIn() &&
+        isValidId(uid) &&
+        request.auth.uid == uid;
     }
 
-    // 10. User Directory (Unique Username & Registered App User Lookup)
+    // 10. User Directory (O(1) authenticated handle lookup; list forbidden; only owner of both UID and memberId can create/update/delete)
     match /userDirectory/{username} {
-      allow read: if true;
-      allow create, update: if isValidId(username) &&
-        incoming().username is string &&
-        incoming().username.size() >= 2 &&
-        incoming().username.size() <= 40 &&
-        incoming().memberId is string &&
-        incoming().memberId.size() > 0 &&
-        incoming().name is string &&
-        incoming().name.size() > 0;
-      allow delete: if isValidId(username);
-    }
-
-    // Default deny all other paths
-    match /{document=**} {
-      allow read, write: if false;
+      allow get: if isSignedIn() && isValidUsernameHandle(username);
+      allow list: if false;
+      allow create: if isSignedIn() &&
+        isValidUsernameHandle(username) &&
+        isValidUserDirectory(incoming()) &&
+        incoming().username == username &&
+        incoming().uid == request.auth.uid &&
+        isMemberOwner(incoming().memberId);
+      allow update: if isSignedIn() &&
+        isValidUsernameHandle(username) &&
+        isValidUserDirectory(incoming()) &&
+        incoming().username == username &&
+        existing().uid == request.auth.uid &&
+        incoming().uid == request.auth.uid &&
+        existing().memberId == incoming().memberId &&
+        isMemberOwner(incoming().memberId);
+      allow delete: if isSignedIn() &&
+        isValidUsernameHandle(username) &&
+        (resource == null || existing().uid == request.auth.uid);
     }
   }
 }

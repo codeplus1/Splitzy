@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import {
   Group,
   Expense,
@@ -43,16 +43,36 @@ import {
 import { Header } from './components/Header';
 import { Dashboard } from './components/Dashboard';
 import { GroupDetail } from './components/GroupDetail';
-import { AddExpenseModal } from './components/AddExpenseModal';
-import { CreateGroupModal } from './components/CreateGroupModal';
-import { JoinGroupModal } from './components/JoinGroupModal';
-import { SettleModal } from './components/SettleModal';
-import { TestRunnerModal } from './components/TestRunnerModal';
-import { SecurityCenterModal } from './components/SecurityCenterModal';
-import { SettingsModal } from './components/SettingsModal';
 import { UserOnboardingModal } from './components/UserOnboardingModal';
 import { ToastContainer, ToastMessage } from './components/Toast';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import {
+  AppLockScreen,
+  isAppLockEnabled,
+  getAppLockTimeoutMs,
+} from './components/AppLockScreen';
+
+const AddExpenseModal = lazy(() =>
+  import('./components/AddExpenseModal').then(m => ({ default: m.AddExpenseModal }))
+);
+const CreateGroupModal = lazy(() =>
+  import('./components/CreateGroupModal').then(m => ({ default: m.CreateGroupModal }))
+);
+const JoinGroupModal = lazy(() =>
+  import('./components/JoinGroupModal').then(m => ({ default: m.JoinGroupModal }))
+);
+const SettleModal = lazy(() =>
+  import('./components/SettleModal').then(m => ({ default: m.SettleModal }))
+);
+const TestRunnerModal = lazy(() =>
+  import('./components/TestRunnerModal').then(m => ({ default: m.TestRunnerModal }))
+);
+const SecurityCenterModal = lazy(() =>
+  import('./components/SecurityCenterModal').then(m => ({ default: m.SecurityCenterModal }))
+);
+const SettingsModal = lazy(() =>
+  import('./components/SettingsModal').then(m => ({ default: m.SettingsModal }))
+);
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>(() => loadAppState());
@@ -81,6 +101,71 @@ export default function App() {
   const [isSecurityCenterOpen, setIsSecurityCenterOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
+  const [isAppLocked, setIsAppLocked] = useState<boolean>(() => {
+    const hasUser = Boolean(appState.userProfile || appState.members.length > 0);
+    return hasUser && isAppLockEnabled();
+  });
+  const [appLockConfigVersion, setAppLockConfigVersion] = useState(0);
+
+  // Listen for PIN / Auto-lock preference changes from Settings
+  useEffect(() => {
+    const handleConfigChange = () => {
+      setAppLockConfigVersion(v => v + 1);
+    };
+    window.addEventListener('splitzy-autolock-config-changed', handleConfigChange);
+    return () =>
+      window.removeEventListener('splitzy-autolock-config-changed', handleConfigChange);
+  }, []);
+
+  // Automatic inactivity and background auto-lock timer (defaults to 1 minute or user-selected preference)
+  useEffect(() => {
+    if (isAppLocked || !isAppLockEnabled()) return;
+    const timeoutMs = getAppLockTimeoutMs();
+    if (timeoutMs <= 0) return;
+
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastActivityAt = Date.now();
+
+    const resetIdleTimer = () => {
+      lastActivityAt = Date.now();
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (isAppLockEnabled()) {
+          setIsAppLocked(true);
+        }
+      }, timeoutMs);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        if (Date.now() - lastActivityAt >= timeoutMs && isAppLockEnabled()) {
+          setIsAppLocked(true);
+        } else {
+          resetIdleTimer();
+        }
+      }
+    };
+
+    const activityEvents: Array<keyof WindowEventMap> = [
+      'pointerdown',
+      'keydown',
+      'touchstart',
+      'wheel',
+      'scroll',
+    ];
+
+    activityEvents.forEach(ev =>
+      window.addEventListener(ev, resetIdleTimer, { passive: true })
+    );
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    resetIdleTimer();
+
+    return () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      activityEvents.forEach(ev => window.removeEventListener(ev, resetIdleTimer));
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isAppLocked, appLockConfigVersion]);
 
   // Toast notifications
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -145,19 +230,54 @@ export default function App() {
     const unsubscribe = subscribeToUserCloudSync(
       currentUser.uid,
       cloudData => {
+        // Automatically purge stale pre-reset group (#KJCAN4 / "September खर्च") if it resurfaced from local cache
+        const staleGroups = cloudData.groups.filter(
+          g => g.inviteCode === 'KJCAN4' || g.name?.includes('September खर्च')
+        );
+        if (staleGroups.length > 0) {
+          for (const sg of staleGroups) {
+            const sgExpenses = cloudData.expenses.filter(e => e.groupId === sg.id);
+            const sgExpIds = new Set(sgExpenses.map(e => e.id));
+            const sgShares = cloudData.expenseShares.filter(s => sgExpIds.has(s.expenseId));
+            const sgSettlements = cloudData.settlements.filter(s => s.groupId === sg.id);
+            const sgGroupMembers = cloudData.groupMembers.filter(gm => gm.groupId === sg.id);
+            cloudDeleteGroup(sg.id, sgExpenses, sgShares, sgSettlements, sgGroupMembers, sg.inviteCode);
+          }
+        }
+
         // Safe reconciliation merge algorithm: never overwrite local data with partial results
         setAppState(prev => reconcileAppState(prev, cloudData));
 
-        if (cloudData.isInitialLoad && cloudData.groups.length === 0) {
-          // Cloud has no groups for this user: if local storage has existing groups, claim & seed them
+        const isRealFirebaseUid = Boolean(
+          currentUser.uid &&
+            currentUser.uid !== 'anonymous' &&
+            !currentUser.uid.startsWith('u_')
+        );
+
+        if (cloudData.isInitialLoad && isRealFirebaseUid) {
           const local = loadAppState();
-          if (local.groups.length > 0) {
-            const preparedGroups = local.groups.map(g => ({
-              ...g,
-              createdBy: g.createdBy || currentUser.uid,
-              memberUserIds: Array.from(new Set([...(g.memberUserIds || []), currentUser.uid])),
-              inviteCode: g.inviteCode || generateInviteCode(),
-            }));
+          const pendingGroupSet = new Set(local.pendingGroupIds || []);
+          const pendingLocalGroups = local.groups.filter(g => pendingGroupSet.has(g.id));
+          if (pendingLocalGroups.length > 0) {
+            const preparedGroups = pendingLocalGroups.map(g => {
+              const isLocalCreator =
+                !g.createdBy ||
+                g.createdBy === 'anonymous' ||
+                g.createdBy.startsWith('u_');
+              return {
+                ...g,
+                createdBy: isLocalCreator ? currentUser.uid : g.createdBy,
+                memberUserIds: Array.from(
+                  new Set([
+                    ...(g.memberUserIds || []).filter(
+                      u => u !== 'anonymous' && !u.startsWith('u_')
+                    ),
+                    currentUser.uid,
+                  ])
+                ),
+                inviteCode: g.inviteCode || generateInviteCode(),
+              };
+            });
             cloudUploadFullState({ ...local, groups: preparedGroups }, currentUser);
           }
         }
@@ -172,23 +292,97 @@ export default function App() {
     };
   }, [currentUser]);
 
-  // 3. Handle incoming join link (?join=CODE)
+  // 3. Handle incoming join link (?join=CODE) and client-side group route (/group/:id or ?group=id)
+  const pendingJoinCodeRef = useRef<string | null>(null);
+  const pendingRouteGroupIdRef = useRef<string | null>(null);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const joinCode = params.get('join');
-    if (joinCode && currentUser) {
-      // Remove query param from browser URL to prevent re-triggering
-      window.history.replaceState({}, document.title, window.location.pathname);
-      joinGroupByInviteCode(joinCode, currentUser).then(result => {
-        if (result.success && result.group) {
-          setActiveGroupId(result.group.id);
-          showToast(result.message, 'success');
-        } else {
-          showToast(result.message, 'error');
-        }
-      });
+    const routeGroupId = params.get('group');
+    const pathMatch = window.location.pathname.match(/^\/group\/([^/]+)/);
+    const initialGroupFromUrl = routeGroupId || (pathMatch ? decodeURIComponent(pathMatch[1]) : null);
+
+    if (initialGroupFromUrl) {
+      if (appState.groups.some(g => g.id === initialGroupFromUrl)) {
+        setActiveGroupId(initialGroupFromUrl);
+        pendingRouteGroupIdRef.current = null;
+      } else {
+        pendingRouteGroupIdRef.current = initialGroupFromUrl;
+      }
+    }
+
+    if (joinCode) {
+      pendingJoinCodeRef.current = joinCode;
+      window.history.replaceState({}, document.title, '/');
+    }
+
+    if (pendingJoinCodeRef.current && currentUser) {
+      const codeToJoin = pendingJoinCodeRef.current;
+      pendingJoinCodeRef.current = null;
+      handleJoinGroup(codeToJoin).catch(() => {});
     }
   }, [currentUser]);
+
+  // Resolve pending deep-linked group once cloud sync populates appState.groups
+  useEffect(() => {
+    const pendingId = pendingRouteGroupIdRef.current;
+    if (pendingId && appState.groups.some(g => g.id === pendingId)) {
+      pendingRouteGroupIdRef.current = null;
+      setActiveGroupId(pendingId);
+    }
+  }, [appState.groups]);
+
+  // Keep browser URL in sync with activeGroupId and support browser Back/Forward buttons
+  useEffect(() => {
+    const handlePopState = () => {
+      const pathMatch = window.location.pathname.match(/^\/group\/([^/]+)/);
+      if (pathMatch) {
+        const gid = decodeURIComponent(pathMatch[1]);
+        setActiveGroupId(gid);
+      } else {
+        pendingRouteGroupIdRef.current = null;
+        setActiveGroupId(null);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (!activeGroupId && pendingRouteGroupIdRef.current) {
+      // Wait for cloud sync before overwriting a deep-linked /group/:id URL
+      return;
+    }
+    const targetPath = activeGroupId ? `/group/${encodeURIComponent(activeGroupId)}` : '/';
+    if (window.location.pathname !== targetPath && !window.location.search.includes('join=')) {
+      window.history.pushState({ activeGroupId }, document.title, targetPath);
+    }
+  }, [activeGroupId]);
+
+  // Automatically flush any pending offline changes when network connection is restored
+  useEffect(() => {
+    const handleOnlineRecovery = () => {
+      if (currentUser && (appState.groups.length > 0 || (appState.pendingExpenseIds?.length || 0) > 0)) {
+        setSyncStatus('syncing');
+        cloudUploadFullState(appState, currentUser).then(res => {
+          if (res.success) {
+            setSyncStatus('connected');
+            setAppState(prev => ({ ...prev, pendingExpenseIds: [] }));
+          }
+        });
+      }
+    };
+    const handleOfflineState = () => {
+      setSyncStatus('offline');
+    };
+    window.addEventListener('online', handleOnlineRecovery);
+    window.addEventListener('offline', handleOfflineState);
+    return () => {
+      window.removeEventListener('online', handleOnlineRecovery);
+      window.removeEventListener('offline', handleOfflineState);
+    };
+  }, [currentUser, appState]);
 
   // Sync state changes to localStorage as offline safety
   useEffect(() => {
@@ -227,7 +421,11 @@ export default function App() {
   const currentGroup = appState.groups.find(g => g.id === activeGroupId) || null;
 
   // Add / Edit Expense handler - Automatically synchronized with Cloud Database
-  const handleSaveExpense = (newExpense: Expense, newShares: ExpenseShare[]) => {
+  const handleSaveExpense = (newExpense: Expense, rawShares: ExpenseShare[]) => {
+    const newShares = rawShares.map(s => ({
+      ...s,
+      groupId: s.groupId || newExpense.groupId,
+    }));
     const isExisting = appState.expenses.some(e => e.id === newExpense.id);
     const oldShareIds = isExisting
       ? appState.expenseShares.filter(s => s.expenseId === newExpense.id).map(s => s.id)
@@ -270,7 +468,9 @@ export default function App() {
 
     // Automatically sync to Firebase Firestore Cloud Database
     setSyncStatus('saving');
-    cloudSaveExpense(newExpense, newShares, oldShareIds).then(async res => {
+    const targetGroup =
+      appState.groups.find(g => g.id === newExpense.groupId) || currentGroup;
+    cloudSaveExpense(newExpense, newShares, oldShareIds, targetGroup).then(async res => {
       if (res.success) {
         setSyncStatus('connected');
         setAppState(prev => ({
@@ -374,11 +574,50 @@ export default function App() {
         ? prev.members.map(m => (m.id === memberId ? updatedMember : m))
         : [updatedMember, ...prev.members];
 
+      // Ensure all existing groups have an up-to-date GroupMember record for this user
+      const updatedGroupMembers = prev.groupMembers.map(gm =>
+        gm.memberId === memberId
+          ? {
+              ...gm,
+              memberName: updatedMember.name,
+              memberUsername: updatedMember.username,
+              memberAvatar: updatedMember.avatar,
+              memberColor: updatedMember.color,
+              memberUid: updatedMember.uid,
+            }
+          : gm
+      );
+
+      for (const g of prev.groups) {
+        const hasGm = updatedGroupMembers.some(
+          gm => gm.groupId === g.id && gm.memberId === memberId
+        );
+        if (!hasGm) {
+          const newGm: GroupMember = {
+            id: `gm_${g.id}_${memberId}`,
+            groupId: g.id,
+            memberId,
+            memberName: updatedMember.name,
+            memberUsername: updatedMember.username,
+            memberAvatar: updatedMember.avatar,
+            memberColor: updatedMember.color,
+            memberUid: updatedMember.uid,
+          };
+          updatedGroupMembers.push(newGm);
+          cloudAddMember(
+            { ...updatedMember, groupId: g.id },
+            newGm,
+            g.createdBy === currentUser?.uid
+          );
+        }
+      }
+
       const nextState: AppState = {
         ...prev,
         userProfile: updatedMember,
         currentUserId: memberId,
         members: updatedMembers,
+        groupMembers: updatedGroupMembers,
       };
 
       // If user already has groups, sync updated member profile to cloud
@@ -407,7 +646,7 @@ export default function App() {
     const preparedGroup: Group = {
       ...newGroup,
       createdBy: uid,
-      memberUserIds: [uid],
+      memberUserIds: Array.from(new Set([...(newGroup.memberUserIds || []), uid])),
       inviteCode: uniqueInviteCode,
     };
 
@@ -415,6 +654,11 @@ export default function App() {
       id: `gm_${preparedGroup.id}_${m.id}`,
       groupId: preparedGroup.id,
       memberId: m.id,
+      memberName: m.name,
+      memberUsername: m.username,
+      memberAvatar: m.avatar,
+      memberColor: m.color,
+      memberUid: m.uid,
     }));
 
     setAppState(prev => ({
@@ -422,12 +666,21 @@ export default function App() {
       groups: [preparedGroup, ...prev.groups],
       members: [...prev.members, ...membersToAdd],
       groupMembers: [...prev.groupMembers, ...newGroupMembers],
+      pendingGroupIds: Array.from(new Set([...(prev.pendingGroupIds || []), preparedGroup.id])),
+      deletedGroupIds: (prev.deletedGroupIds || []).filter(id => id !== preparedGroup.id),
       activeGroupId: preparedGroup.id,
       currentUserId: prev.currentUserId || newMembers[0]?.id || '',
     }));
 
     // Sync to Cloud Firestore with all group members (including the creator's own member profile)
-    cloudCreateGroup(preparedGroup, newMembers, newGroupMembers, currentUser);
+    cloudCreateGroup(preparedGroup, newMembers, newGroupMembers, currentUser).then(res => {
+      if (res.success) {
+        setAppState(prev => ({
+          ...prev,
+          pendingGroupIds: (prev.pendingGroupIds || []).filter(id => id !== preparedGroup.id),
+        }));
+      }
+    });
 
     setActiveGroupId(preparedGroup.id);
     showToast(`Group "${preparedGroup.name}" created with private invite code #${preparedGroup.inviteCode}!`, 'success');
@@ -453,8 +706,17 @@ export default function App() {
           id: gmId,
           groupId: joinedGroup.id,
           memberId: myProfile.id,
+          memberName: myProfile.name,
+          memberUsername: myProfile.username,
+          memberAvatar: myProfile.avatar,
+          memberColor: myProfile.color,
+          memberUid: currentUser.uid,
         };
-        cloudAddMember(myProfile, newGm);
+        cloudAddMember(
+          { ...myProfile, uid: currentUser.uid, groupId: joinedGroup.id },
+          newGm,
+          joinedGroup.createdBy === currentUser.uid
+        );
 
         setAppState(prev => {
           const groupExists = prev.groups.some(g => g.id === joinedGroup.id);
@@ -472,6 +734,7 @@ export default function App() {
             groupMembers: gmExists
               ? prev.groupMembers
               : [...prev.groupMembers, newGm],
+            deletedGroupIds: (prev.deletedGroupIds || []).filter(id => id !== joinedGroup.id),
             activeGroupId: joinedGroup.id,
           };
         });
@@ -483,6 +746,7 @@ export default function App() {
             groups: exists
               ? prev.groups.map(g => (g.id === joinedGroup.id ? joinedGroup : g))
               : [joinedGroup, ...prev.groups],
+            deletedGroupIds: (prev.deletedGroupIds || []).filter(id => id !== joinedGroup.id),
             activeGroupId: joinedGroup.id,
           };
         });
@@ -509,14 +773,28 @@ export default function App() {
     showToast('Settlement recorded! Balances recalculated.', 'success');
   };
 
-  // Add Verified Registered Member to Group
+  // Add Verified Registered Member to Group (Restricted to Group Owner)
   const handleAddMemberToGroup = (verifiedMember: Member) => {
     if (!currentGroup) return;
+    const isLocalCreator =
+      !currentGroup.createdBy ||
+      currentGroup.createdBy === 'anonymous' ||
+      currentGroup.createdBy.startsWith('u_');
+    const isOwner = isLocalCreator || currentGroup.createdBy === currentUser?.uid;
+    if (!isOwner) {
+      showToast('Only the group owner can directly add members. Share the group invite code instead.', 'error');
+      return;
+    }
 
     const newGroupMember: GroupMember = {
       id: `gm_${currentGroup.id}_${verifiedMember.id}`,
       groupId: currentGroup.id,
       memberId: verifiedMember.id,
+      memberName: verifiedMember.name,
+      memberUsername: verifiedMember.username,
+      memberAvatar: verifiedMember.avatar,
+      memberColor: verifiedMember.color,
+      memberUid: verifiedMember.uid,
     };
 
     setAppState(prev => {
@@ -547,25 +825,65 @@ export default function App() {
     });
 
     // Sync verified member & group access to Cloud Firestore
-    cloudAddMember(verifiedMember, newGroupMember);
+    cloudAddMember(verifiedMember, newGroupMember, true);
   };
 
-  // Update Group details
+  // Update Group details (Restricted to Group Owner)
   const handleUpdateGroup = (updated: Partial<Group>) => {
     if (!currentGroup) return;
+    const isLocalCreator =
+      !currentGroup.createdBy ||
+      currentGroup.createdBy === 'anonymous' ||
+      currentGroup.createdBy.startsWith('u_');
+    const isOwner = isLocalCreator || currentGroup.createdBy === currentUser?.uid;
+    if (!isOwner) {
+      showToast('Only the group owner can modify group settings.', 'error');
+      return;
+    }
+    const mergedGroup: Group = {
+      ...currentGroup,
+      ...updated,
+      createdBy: isLocalCreator && currentUser?.uid ? currentUser.uid : currentGroup.createdBy,
+    };
     setAppState(prev => ({
       ...prev,
       groups: prev.groups.map(g =>
-        g.id === currentGroup.id ? { ...g, ...updated } : g
+        g.id === currentGroup.id ? mergedGroup : g
       ),
     }));
 
     // Sync update to Cloud Firestore
-    cloudUpdateGroup(currentGroup.id, updated);
+    cloudUpdateGroup(currentGroup.id, updated, mergedGroup);
   };
 
-  // Delete Group (Only allowed when all balances are settled)
+  // Delete Group (Strictly restricted to Group Owner and when all balances are settled)
   const handleDeleteGroup = (groupId: string) => {
+    const groupObj = appState.groups.find(g => g.id === groupId);
+    const groupMembersToDelete = appState.groupMembers.filter(
+      gm => gm.groupId === groupId
+    );
+    const groupMemberIds = new Set(groupMembersToDelete.map(gm => gm.memberId));
+    const membersInGroup = appState.members.filter(m => groupMemberIds.has(m.id));
+
+    const isLocalCreator =
+      !groupObj?.createdBy ||
+      groupObj.createdBy === 'anonymous' ||
+      groupObj.createdBy.startsWith('u_');
+    const isSoleMember =
+      (groupObj?.memberUserIds?.length === 1 &&
+        Boolean(currentUser?.uid) &&
+        groupObj.memberUserIds.includes(currentUser.uid)) ||
+      membersInGroup.length <= 1;
+    const isOwner =
+      isLocalCreator ||
+      isSoleMember ||
+      groupObj?.createdBy === currentUser?.uid;
+
+    if (!isOwner) {
+      showToast('Only the group owner is authorized to delete this group.', 'error');
+      return;
+    }
+
     const expensesToDelete = appState.expenses.filter(e => e.groupId === groupId);
     const expenseIdsToDelete = new Set(expensesToDelete.map(e => e.id));
     const sharesToDelete = appState.expenseShares.filter(s =>
@@ -574,13 +892,6 @@ export default function App() {
     const settlementsToDelete = appState.settlements.filter(
       s => s.groupId === groupId
     );
-    const groupMembersToDelete = appState.groupMembers.filter(
-      gm => gm.groupId === groupId
-    );
-
-    const groupMemberIds = new Set(groupMembersToDelete.map(gm => gm.memberId));
-    const membersInGroup = appState.members.filter(m => groupMemberIds.has(m.id));
-    const groupObj = appState.groups.find(g => g.id === groupId);
 
     if (groupObj && membersInGroup.length > 0) {
       const groupBalances = calculateMemberBalances(
@@ -606,6 +917,7 @@ export default function App() {
       expenseShares: prev.expenseShares.filter(s => !expenseIdsToDelete.has(s.expenseId)),
       settlements: prev.settlements.filter(s => s.groupId !== groupId),
       groupMembers: prev.groupMembers.filter(gm => gm.groupId !== groupId),
+      deletedGroupIds: Array.from(new Set([...(prev.deletedGroupIds || []), groupId])),
       activeGroupId: null,
     }));
     setActiveGroupId(null);
@@ -616,7 +928,8 @@ export default function App() {
       expensesToDelete,
       sharesToDelete,
       settlementsToDelete,
-      groupMembersToDelete
+      groupMembersToDelete,
+      groupObj?.inviteCode
     );
     showToast('Group deleted', 'info');
   };
@@ -652,6 +965,48 @@ export default function App() {
     fileInputRef.current?.click();
   };
 
+  const handleRestoreBackupState = async (imported: AppState) => {
+    const uid = currentUser?.uid;
+    const oldOwnerId = imported.userProfile?.id || imported.currentUserId;
+    const oldOwnerUid = imported.userProfile?.uid;
+
+    const normalizedGroups = (imported.groups || []).map(g => {
+      const wasOwner =
+        !g.createdBy ||
+        g.createdBy === 'anonymous' ||
+        g.createdBy.startsWith('u_') ||
+        (oldOwnerUid && g.createdBy === oldOwnerUid);
+      const nextMemberUserIds = Array.from(
+        new Set([...(g.memberUserIds || []), ...(uid ? [uid] : [])])
+      );
+      return {
+        ...g,
+        createdBy: wasOwner && uid ? uid : g.createdBy,
+        memberUserIds: nextMemberUserIds,
+      };
+    });
+
+    const normalizedMembers = (imported.members || []).map(m =>
+      m.id === oldOwnerId && uid ? { ...m, uid } : m
+    );
+    const normalizedProfile =
+      imported.userProfile && uid
+        ? { ...imported.userProfile, uid }
+        : imported.userProfile;
+
+    const normalizedState: AppState = {
+      ...imported,
+      groups: normalizedGroups,
+      members: normalizedMembers,
+      userProfile: normalizedProfile,
+      deletedGroupIds: [],
+    };
+
+    setAppState(normalizedState);
+    setActiveGroupId(normalizedState.groups[0]?.id || null);
+    await cloudUploadFullState(normalizedState, currentUser);
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -661,9 +1016,7 @@ export default function App() {
       const content = event.target?.result as string;
       const imported = importStateFromJSON(content);
       if (imported) {
-        setAppState(imported);
-        setActiveGroupId(imported.groups[0]?.id || null);
-        await cloudUploadFullState(imported, currentUser);
+        await handleRestoreBackupState(imported);
         showToast('Data imported and synced to Cloud!', 'success');
       } else {
         showToast('Failed to parse backup file.', 'error');
@@ -684,18 +1037,44 @@ export default function App() {
   // so members from past groups (e.g. User B from Demo) are NEVER automatically added to new groups!
   const currentGroupMembers = React.useMemo(() => {
     if (!currentGroup) return [];
-    const gmIds = new Set(
-      appState.groupMembers
-        .filter(gm => gm.groupId === currentGroup.id)
-        .map(gm => gm.memberId)
+    const groupGms = appState.groupMembers.filter(
+      gm => gm.groupId === currentGroup.id
     );
-    const scoped = appState.members.filter(m => gmIds.has(m.id));
+    const memberById = new Map<string, Member>(
+      appState.members.map(m => [m.id, m])
+    );
+    const scoped: Member[] = [];
+    for (const gm of groupGms) {
+      const existing = memberById.get(gm.memberId);
+      if (existing) {
+        scoped.push(existing);
+      } else if (gm.memberName) {
+        scoped.push({
+          id: gm.memberId,
+          name: gm.memberName,
+          username: gm.memberUsername,
+          avatar: gm.memberAvatar || '👤',
+          color: gm.memberColor || '#670B27',
+          uid: gm.memberUid,
+          groupId: gm.groupId,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
     if (scoped.length > 0) return scoped;
     return currentUserMember ? [currentUserMember] : [];
   }, [currentGroup, appState.groupMembers, appState.members, currentUserMember]);
 
   return (
     <div className="min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)] transition-colors flex flex-col font-sans">
+      {isAppLocked && (
+        <AppLockScreen
+          onUnlock={() => setIsAppLocked(false)}
+          userName={currentUserMember?.name}
+          language={appState.language}
+        />
+      )}
+
       {/* Hidden file input for backup imports */}
       <input
         type="file"
@@ -712,6 +1091,7 @@ export default function App() {
         onJoinGroupClick={() => setIsJoinGroupOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onHomeClick={() => setActiveGroupId(null)}
+        onLockAppClick={isAppLockEnabled() ? () => setIsAppLocked(true) : undefined}
         currentMember={currentUserMember}
         onEditUserClick={() => setIsEditProfileOpen(true)}
         syncStatus={syncStatus}
@@ -783,93 +1163,129 @@ export default function App() {
         language={appState.language}
       />
 
-      {/* Modals */}
-      {isAddExpenseOpen && currentGroup && (
-        <AddExpenseModal
-          onClose={() => {
-            setIsAddExpenseOpen(false);
-            setExpenseToEdit(null);
-          }}
-          group={currentGroup}
-          members={currentGroupMembers}
-          onSave={handleSaveExpense}
-          onDelete={handleDeleteExpense}
-          expenseToEdit={expenseToEdit}
-          language={appState.language}
-        />
-      )}
+      {/* Modals (Lazy-loaded with Suspense) */}
+      <Suspense fallback={null}>
+        {isAddExpenseOpen && currentGroup && (
+          <AddExpenseModal
+            onClose={() => {
+              setIsAddExpenseOpen(false);
+              setExpenseToEdit(null);
+            }}
+            group={currentGroup}
+            members={currentGroupMembers}
+            onSave={handleSaveExpense}
+            onDelete={handleDeleteExpense}
+            expenseToEdit={expenseToEdit}
+            language={appState.language}
+          />
+        )}
 
-      {isCreateGroupOpen && (
-        <CreateGroupModal
-          onClose={() => setIsCreateGroupOpen(false)}
-          onGroupCreated={handleGroupCreated}
-          currentUserMember={currentUserMember}
-          language={appState.language}
-        />
-      )}
+        {isCreateGroupOpen && (
+          <CreateGroupModal
+            onClose={() => setIsCreateGroupOpen(false)}
+            onGroupCreated={handleGroupCreated}
+            currentUserMember={currentUserMember}
+            language={appState.language}
+          />
+        )}
 
-      {isJoinGroupOpen && (
-        <JoinGroupModal
-          isOpen={isJoinGroupOpen}
-          language={appState.language}
-          onClose={() => setIsJoinGroupOpen(false)}
-          onJoin={handleJoinGroup}
-        />
-      )}
+        {isJoinGroupOpen && (
+          <JoinGroupModal
+            isOpen={isJoinGroupOpen}
+            language={appState.language}
+            onClose={() => setIsJoinGroupOpen(false)}
+            onJoin={handleJoinGroup}
+          />
+        )}
 
-      {isSettleModalOpen && currentGroup && (
-        <SettleModal
-          onClose={() => setIsSettleModalOpen(false)}
-          group={currentGroup}
-          members={currentGroupMembers}
-          initialFromId={settleParams.fromId}
-          initialToId={settleParams.toId}
-          initialAmount={settleParams.amount}
-          currentUserId={appState.currentUserId}
-          onSettle={handleSettleRecorded}
-          language={appState.language}
-        />
-      )}
+        {isSettleModalOpen && currentGroup && (
+          <SettleModal
+            onClose={() => setIsSettleModalOpen(false)}
+            group={currentGroup}
+            members={currentGroupMembers}
+            initialFromId={settleParams.fromId}
+            initialToId={settleParams.toId}
+            initialAmount={settleParams.amount}
+            currentUserId={appState.currentUserId}
+            onSettle={handleSettleRecorded}
+            language={appState.language}
+          />
+        )}
 
-      {isTestRunnerOpen && (
-        <TestRunnerModal
-          onClose={() => setIsTestRunnerOpen(false)}
-          language={appState.language}
-        />
-      )}
+        {isTestRunnerOpen && (
+          <TestRunnerModal
+            onClose={() => setIsTestRunnerOpen(false)}
+            language={appState.language}
+          />
+        )}
 
-      {/* Security & Recovery Center Modal */}
-      <SecurityCenterModal
-        isOpen={isSecurityCenterOpen}
-        onClose={() => setIsSecurityCenterOpen(false)}
-        currentUser={currentUser}
-        appState={appState}
-        onRestoreState={restored => {
-          setAppState(restored);
-          if (restored.groups.length > 0) {
-            setActiveGroupId(restored.groups[0].id);
-          }
-        }}
-        onShowToast={showToast}
-        language={appState.language}
-      />
+        {/* Security & Recovery Center Modal */}
+        {isSecurityCenterOpen && (
+          <SecurityCenterModal
+            isOpen={isSecurityCenterOpen}
+            onClose={() => setIsSecurityCenterOpen(false)}
+            currentUser={currentUser}
+            appState={appState}
+            onRestoreState={restored => {
+              handleRestoreBackupState(restored);
+            }}
+            onShowToast={showToast}
+            language={appState.language}
+          />
+        )}
 
-      {/* Settings Modal (Language Selection, Security & Recovery Center, Auto-Sync & Maintenance) */}
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        language={appState.language}
-        onLanguageChange={lang =>
-          setAppState(prev => ({ ...prev, language: lang }))
-        }
-        onOpenSecurityCenter={() => setIsSecurityCenterOpen(true)}
-        onExportData={handleExportData}
-        onImportData={handleImportDataClick}
-        onManualSync={handleManualSync}
-        onOpenTestRunner={() => setIsTestRunnerOpen(true)}
-        syncStatus={syncStatus}
-        userId={currentUser?.uid}
-      />
+        {/* Settings Modal (Language Selection, Security & Recovery Center, Auto-Sync & Maintenance) */}
+        {isSettingsOpen && (
+          <SettingsModal
+            isOpen={isSettingsOpen}
+            onClose={() => setIsSettingsOpen(false)}
+            language={appState.language}
+            onLanguageChange={lang =>
+              setAppState(prev => ({ ...prev, language: lang }))
+            }
+            defaultCurrency={currentGroup?.baseCurrency || appState.groups[0]?.baseCurrency || 'NPR'}
+            onCurrencyChange={nextCurr => {
+              const targetGroup = currentGroup || appState.groups[0];
+              if (targetGroup) {
+                const updatedGroup = { ...targetGroup, baseCurrency: nextCurr };
+                setAppState(prev => ({
+                  ...prev,
+                  groups: prev.groups.map(g =>
+                    g.id === targetGroup.id ? updatedGroup : g
+                  ),
+                }));
+                cloudUpdateGroup(targetGroup.id, { baseCurrency: nextCurr }, updatedGroup);
+                showToast(`Base currency updated to ${nextCurr}`, 'success');
+              }
+            }}
+            defaultCalendar={currentGroup?.preferredCalendar || appState.groups[0]?.preferredCalendar || 'BS'}
+            onCalendarChange={nextCal => {
+              const targetGroup = currentGroup || appState.groups[0];
+              if (targetGroup) {
+                const updatedGroup = { ...targetGroup, preferredCalendar: nextCal };
+                setAppState(prev => ({
+                  ...prev,
+                  groups: prev.groups.map(g =>
+                    g.id === targetGroup.id ? updatedGroup : g
+                  ),
+                }));
+                cloudUpdateGroup(targetGroup.id, { preferredCalendar: nextCal }, updatedGroup);
+                showToast(`Calendar mode updated to ${nextCal}`, 'success');
+              }
+            }}
+            onOpenSecurityCenter={() => setIsSecurityCenterOpen(true)}
+            onExportData={handleExportData}
+            onImportData={handleImportDataClick}
+            onManualSync={handleManualSync}
+            onOpenTestRunner={() => setIsTestRunnerOpen(true)}
+            onEditProfile={() => setIsEditProfileOpen(true)}
+            onLockAppNow={() => setIsAppLocked(true)}
+            currentMember={currentUserMember}
+            syncStatus={syncStatus}
+            userId={currentUser?.uid}
+          />
+        )}
+      </Suspense>
 
       {/* Offline Connectivity Indicator */}
       <OfflineIndicator />

@@ -30,7 +30,7 @@ import {
 import { MemberAvatar } from './MemberAvatar';
 import { SwipeableExpenseItem } from './SwipeableExpenseItem';
 import { ShareGroupModal } from './ShareGroupModal';
-import { formatMoney } from '../core/currency';
+import { formatMoney, SUPPORTED_CURRENCIES } from '../core/currency';
 import {
   calculateMemberBalances,
   optimizeSettlements,
@@ -88,6 +88,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
 
   // Settings inputs
   const [groupNameEdit, setGroupNameEdit] = useState(group.name);
+  const [groupCurrencyEdit, setGroupCurrencyEdit] = useState(group.baseCurrency);
   const [groupCalendarEdit, setGroupCalendarEdit] = useState<CalendarType>(
     group.preferredCalendar
   );
@@ -95,9 +96,10 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
 
   useEffect(() => {
     setGroupNameEdit(group.name);
+    setGroupCurrencyEdit(group.baseCurrency);
     setGroupCalendarEdit(group.preferredCalendar);
     setShowDeleteConfirm(false);
-  }, [group.id, group.name, group.preferredCalendar]);
+  }, [group.id, group.name, group.baseCurrency, group.preferredCalendar]);
 
   // Filtered group expenses
   const groupExpenses = expenses
@@ -203,7 +205,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
         )
       ) {
         onShowToast(
-          `@${foundMember.username || foundMember.name} is already a member of this group.`,
+          `${foundMember.name} is already a member of this group.`,
           'error'
         );
         return;
@@ -212,7 +214,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
       onAddMemberToGroup(foundMember);
       setNewMemberIdentifier('');
       onShowToast(
-        `Verified & added @${foundMember.username || foundMember.id} (${foundMember.name})!`,
+        `Verified & added ${foundMember.name} to the group!`,
         'success'
       );
     } finally {
@@ -225,6 +227,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
     if (!groupNameEdit.trim()) return;
     onUpdateGroup({
       name: groupNameEdit.trim(),
+      baseCurrency: groupCurrencyEdit,
       preferredCalendar: groupCalendarEdit,
     });
     onShowToast(translate(language, 'saveChanges'), 'success');
@@ -249,13 +252,23 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                 <h1 className="text-base sm:text-lg font-bold font-sans tracking-tight text-[var(--ink)]">
                   {group.name}
                 </h1>
-                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-[var(--surface-subtle)] text-[var(--ink)] border border-[var(--border-subtle)]">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('settings')}
+                  className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-[var(--surface-subtle)] hover:bg-[var(--surface-hover)] text-[var(--ink)] border border-[var(--border-subtle)] transition-colors cursor-pointer"
+                  title="Change Base Currency in Settings"
+                >
                   {group.baseCurrency}
-                </span>
-                <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-md bg-[var(--surface-subtle)] text-[var(--ink-secondary)] inline-flex items-center gap-1">
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('settings')}
+                  className="text-[11px] font-medium px-1.5 py-0.5 rounded-md bg-[var(--surface-subtle)] hover:bg-[var(--surface-hover)] text-[var(--ink-secondary)] inline-flex items-center gap-1 transition-colors cursor-pointer"
+                  title="Change Calendar Mode in Settings"
+                >
                   <Calendar className="w-3 h-3" />
                   {group.preferredCalendar}
-                </span>
+                </button>
                 {group.inviteCode && (
                   <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded-md bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent-border)]">
                     #{group.inviteCode}
@@ -270,37 +283,37 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
           </div>
 
           {/* Quick Actions in Header */}
-          <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="flex items-center gap-1 sm:gap-1.5 flex-nowrap w-full sm:w-auto min-w-0">
             <button
               id="group-invite-btn"
               onClick={() => setIsInviteModalOpen(true)}
-              className="ui-btn-secondary group px-2.5 py-1.5 text-xs"
+              className="ui-btn-secondary group !px-2 sm:!px-2.5 !py-1.5 !text-[11px] sm:!text-xs !gap-1 sm:!gap-1.5 whitespace-nowrap !shrink min-w-0"
               title="Invite members via QR Code or Invite Code"
             >
-              <QrCode className="w-3.5 h-3.5 text-[var(--accent)] group-hover:scale-110 transition-transform" />
-              <span>Invite</span>
+              <QrCode className="w-3.5 h-3.5 text-[var(--accent)] shrink-0 group-hover:scale-110 transition-transform" />
+              <span className="truncate">Invite</span>
             </button>
 
             <button
               id="group-share-summary-btn"
               onClick={handleCopySummary}
-              className="ui-btn-secondary group px-2.5 py-1.5 text-xs"
+              className="ui-btn-secondary group !px-2 sm:!px-2.5 !py-1.5 !text-[11px] sm:!text-xs !gap-1 sm:!gap-1.5 whitespace-nowrap !shrink min-w-0"
             >
               {copiedSummary ? (
-                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
               ) : (
-                <Share2 className="w-3.5 h-3.5 text-[var(--ink-secondary)] group-hover:scale-110 transition-transform" />
+                <Share2 className="w-3.5 h-3.5 text-[var(--ink-secondary)] shrink-0 group-hover:scale-110 transition-transform" />
               )}
-              <span>{copiedSummary ? 'Copied!' : translate(language, 'shareSummary')}</span>
+              <span className="truncate">{copiedSummary ? 'Copied!' : translate(language, 'shareSummary')}</span>
             </button>
 
             <button
               id="group-add-expense-btn"
               onClick={onAddExpenseClick}
-              className="ui-btn-primary group px-3 py-1.5 text-xs"
+              className="ui-btn-primary group !px-2.5 sm:!px-3 !py-1.5 !text-[11px] sm:!text-xs !gap-1 sm:!gap-1.5 whitespace-nowrap !shrink min-w-0 ml-auto sm:ml-0"
             >
-              <Plus className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-200" />
-              <span>{translate(language, 'addExpense')}</span>
+              <Plus className="w-3.5 h-3.5 shrink-0 group-hover:rotate-90 transition-transform duration-200" />
+              <span className="truncate">{translate(language, 'addExpense')}</span>
             </button>
           </div>
         </div>
@@ -849,8 +862,12 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
             </form>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 pt-1">
-              {members.map(m => {
+              {members.map((m, idx) => {
                 const bal = balances.find(b => b.memberId === m.id);
+                const isGroupCreator =
+                  (Boolean(m.uid) && Boolean(group.createdBy) && m.uid === group.createdBy) ||
+                  ((!group.createdBy || group.createdBy === 'anonymous' || group.createdBy.startsWith('u_')) && idx === 0);
+                const isYou = Boolean(currentUserId) && m.id === currentUserId;
                 return (
                   <div
                     key={m.id}
@@ -868,14 +885,19 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                           <h4 className="text-xs font-bold text-[var(--ink)] truncate">
                             {m.name}
                           </h4>
-                          {m.username && (
-                            <span className="text-[10px] font-mono text-[var(--accent)] bg-[var(--accent-soft)] px-1.5 py-0.2 rounded border border-[var(--accent-border)] truncate">
-                              @{m.username}
+                          {isGroupCreator && (
+                            <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-[var(--accent)]/12 text-[var(--accent)] border border-[var(--accent)]/25">
+                              Owner
+                            </span>
+                          )}
+                          {isYou && (
+                            <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-[var(--surface-subtle)] text-[var(--ink-secondary)]">
+                              You
                             </span>
                           )}
                         </div>
                         <div className="text-[11px] text-[var(--ink-secondary)] tnum truncate">
-                          Paid: {formatMoney(bal?.totalPaid || 0, group.baseCurrency, language)}
+                          {m.username ? `@${m.username} • ` : ''}Paid: {formatMoney(bal?.totalPaid || 0, group.baseCurrency, language)}
                         </div>
                       </div>
                     </div>
@@ -905,9 +927,22 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
       {activeTab === 'settings' && (
         <div className="space-y-4">
           <div className="ui-card p-4 sm:p-5 space-y-3.5 max-w-xl">
-            <h3 className="font-bold font-display text-[var(--ink)] text-sm">
-              Group Settings
-            </h3>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <h3 className="font-bold font-display text-[var(--ink)] text-sm">
+                Group Settings
+              </h3>
+              {(() => {
+                const ownerMember =
+                  members.find(m => m.uid && group.createdBy && m.uid === group.createdBy) ||
+                  members[0];
+                return ownerMember ? (
+                  <span className="text-[11px] text-[var(--ink-secondary)] bg-[var(--surface-subtle)] px-2.5 py-1 rounded-md border border-[var(--border)]">
+                    Group Owner: <strong className="text-[var(--ink)]">{ownerMember.name}</strong>
+                    {ownerMember.username ? ` (@${ownerMember.username})` : ''}
+                  </span>
+                ) : null;
+              })()}
+            </div>
 
             <form onSubmit={handleSaveSettings} className="space-y-3.5">
               <div className="space-y-1">
@@ -922,18 +957,45 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                 />
               </div>
 
-              <div className="space-y-1">
-                <label className="text-[11px] font-semibold text-[var(--ink-secondary)]">
-                  Default Calendar Mode
-                </label>
-                <select
-                  value={groupCalendarEdit}
-                  onChange={e => setGroupCalendarEdit(e.target.value as CalendarType)}
-                  className="ui-input"
-                >
-                  <option value="BS">Bikram Sambat (BS)</option>
-                  <option value="AD">Gregorian (AD)</option>
-                </select>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-[var(--ink-secondary)]">
+                    {translate(language, 'baseCurrency')}
+                  </label>
+                  <select
+                    value={groupCurrencyEdit}
+                    onChange={e => {
+                      const nextCurr = e.target.value;
+                      setGroupCurrencyEdit(nextCurr);
+                      onUpdateGroup({ baseCurrency: nextCurr });
+                    }}
+                    className="ui-input"
+                  >
+                    {SUPPORTED_CURRENCIES.map(c => (
+                      <option key={c.code} value={c.code}>
+                        {c.code} ({c.symbol}) — {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-semibold text-[var(--ink-secondary)]">
+                    Default Calendar Mode
+                  </label>
+                  <select
+                    value={groupCalendarEdit}
+                    onChange={e => {
+                      const nextCal = e.target.value as CalendarType;
+                      setGroupCalendarEdit(nextCal);
+                      onUpdateGroup({ preferredCalendar: nextCal });
+                    }}
+                    className="ui-input"
+                  >
+                    <option value="BS">Bikram Sambat (BS)</option>
+                    <option value="AD">Gregorian (AD)</option>
+                  </select>
+                </div>
               </div>
 
               <div className="pt-1">

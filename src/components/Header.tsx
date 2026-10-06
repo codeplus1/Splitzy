@@ -4,7 +4,7 @@ import {
   Cloud,
   CloudOff,
   RefreshCw,
-  KeyRound,
+  Lock,
 } from 'lucide-react';
 import { Member, SupportedLanguage } from '../types';
 import { SyncStatus } from '../services/firebase';
@@ -17,15 +17,16 @@ interface HeaderProps {
   onJoinGroupClick?: () => void;
   onOpenSettings: () => void;
   onHomeClick?: () => void;
+  onLockAppClick?: () => void;
   currentMember?: Member;
   onEditUserClick?: () => void;
   syncStatus?: SyncStatus;
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  onJoinGroupClick,
   onOpenSettings,
   onHomeClick,
+  onLockAppClick,
   currentMember,
   onEditUserClick,
   syncStatus = 'connected',
@@ -108,19 +109,6 @@ export const Header: React.FC<HeaderProps> = ({
             )}
           </div>
 
-          {/* Join Button */}
-          {onJoinGroupClick && (
-            <button
-              id="header-join-group-btn"
-              onClick={onJoinGroupClick}
-              className="ui-btn-secondary px-2.5 py-1.5 text-xs group"
-              title="Join group with code"
-            >
-              <KeyRound className="w-3.5 h-3.5 text-[var(--accent)] group-hover:rotate-12 transition-transform" />
-              <span>Join</span>
-            </button>
-          )}
-
           {/* Active User Profile Pill (Edit Own Profile Only) */}
           {currentMember && (
             <button
@@ -144,6 +132,19 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* PWA Install Button */}
           <PWAInstallButton variant="header" />
+
+          {/* Quick Lock Button (when App Lock PIN is enabled) */}
+          {onLockAppClick && (
+            <button
+              id="header-lock-app-btn"
+              onClick={onLockAppClick}
+              className="group w-8 h-8 flex items-center justify-center rounded-lg text-[var(--ink-secondary)] bg-[var(--surface-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--accent)] hover:border-[var(--border-strong)] hover:-translate-y-0.5 active:translate-y-0 active:scale-95 transition-all border border-[var(--border)] cursor-pointer shrink-0"
+              title="Lock App"
+              aria-label="Lock App"
+            >
+              <Lock className="w-3.5 h-3.5" />
+            </button>
+          )}
 
           {/* Settings Button */}
           <button

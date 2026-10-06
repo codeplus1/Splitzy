@@ -160,13 +160,23 @@ IMPORTANT:
       }
 
       if (lookup.uid === currentUser.uid) {
-        onShowToast('This device is already connected to this account!', 'info');
+        saveLocalRecoveryCode(cleanCode);
+        setRecoveryCode(cleanCode);
+        setInputRecoveryCode('');
+        onShowToast('Recovery code verified! This device is connected to your account.', 'success');
         setIsRestoringAccount(false);
         return;
       }
 
       // Link current session to the recovered account's groups
-      const linkRes = await cloudLinkAccountToRecovery(lookup.uid, currentUser.uid);
+      const localCodes = appState.groups
+        .map(g => g.inviteCode)
+        .filter((c): c is string => Boolean(c));
+      const linkRes = await cloudLinkAccountToRecovery(
+        lookup.uid,
+        currentUser.uid,
+        localCodes
+      );
       if (!linkRes.success) {
         throw new Error(linkRes.error || 'Failed to restore account groups.');
       }
@@ -266,11 +276,8 @@ IMPORTANT:
         throw new Error('Decrypted content does not match Hisab Sathi database schema.');
       }
 
-      // Safely restore state and sync to cloud
-      onRestoreState(decrypted);
-      if (currentUser) {
-        await cloudUploadFullState(decrypted, currentUser);
-      }
+      // Safely restore state and sync normalized state to cloud via onRestoreState
+      await onRestoreState(decrypted);
 
       setRestorePassword('');
       setRestorePayload(null);

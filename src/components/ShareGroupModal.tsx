@@ -22,9 +22,10 @@ export const ShareGroupModal: React.FC<ShareGroupModalProps> = ({
 
   const isFrench = language === 'fr';
   const inviteCode = group.inviteCode || 'SPLIT1';
-  const shareUrl = typeof window !== 'undefined'
-    ? `${window.location.origin}${window.location.pathname}?join=${inviteCode}`
-    : `https://splitzy.app/?join=${inviteCode}`;
+  const baseUrl =
+    (import.meta.env && import.meta.env.VITE_APP_URL) ||
+    (typeof window !== 'undefined' ? window.location.origin : 'https://splitzy.vercel.app');
+  const shareUrl = `${baseUrl.replace(/\/$/, '')}/?join=${inviteCode}`;
 
   useEffect(() => {
     if (isOpen && inviteCode) {

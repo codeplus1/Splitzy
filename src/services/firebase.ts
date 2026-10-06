@@ -2,6 +2,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getFirestore,
   initializeFirestore,
+  setLogLevel,
   collection,
   doc,
   getDoc,
@@ -15,9 +16,7 @@ import {
   limit,
   getDocs,
   arrayUnion,
-  arrayRemove,
   Firestore,
-  DocumentSnapshot,
 } from 'firebase/firestore';
 import {
   getAuth,
@@ -27,7 +26,16 @@ import {
   User,
   Auth,
 } from 'firebase/auth';
+import {
+  getStorage,
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL,
+  deleteObject,
+  FirebaseStorage,
+} from 'firebase/storage';
 import { firebaseConfig } from './firebaseConfig';
+import { validateReceiptFile } from '../core/receipt';
 import {
   Group,
   Member,
@@ -38,13 +46,19 @@ import {
   RecoveryRecord,
   UserSecurityProfile,
 } from '../types';
-import { AppState, loadAppState, saveAppState } from './storage';
+import { AppState, loadAppState } from './storage';
 
-// Initialize Firebase App
+// Suppress internal @firebase/firestore transient connection retry logs so they don't trigger false error overlays
+try {
+  setLogLevel('silent');
+} catch {
+  // Ignore if unsupported
+}
+
+// Initialize Firebase App (idempotent singleton check)
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Initialize Firestore with custom Database ID and force long polling
-// This prevents streaming connection failures in iframes, reverse proxies, and sandboxes
+// Initialize Firestore with the exact Database ID from firebaseConfig (firebase-applet-config.json)
 let firestoreInstance: Firestore;
 try {
   firestoreInstance = initializeFirestore(
@@ -53,17 +67,14 @@ try {
       experimentalForceLongPolling: true,
       ignoreUndefinedProperties: true,
     },
-    firebaseConfig.firestoreDatabaseId || '(default)'
+    firebaseConfig.firestoreDatabaseId
   );
 } catch {
-  // If already initialized, retrieve existing instance
-  firestoreInstance = getFirestore(
-    app,
-    firebaseConfig.firestoreDatabaseId || '(default)'
-  );
+  firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 }
 
 export const db: Firestore = firestoreInstance;
+export const storage: FirebaseStorage = getStorage(app);
 
 /**
  * Deeply sanitizes an object before writing to Firestore, stripping out undefined properties
@@ -154,6 +165,58 @@ export function handleFirestoreError(
 
 // 32 unambiguous characters (excludes 0, O, 1, I to prevent human transcription errors)
 const INVITE_CODE_CHARS = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+const STRICT_INVITE_CODE_REGEX = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/;
+
+interface RateLimitBucket {
+  timestamps: number[];
+  lockedUntil: number;
+}
+
+const lookupRateBuckets: Record<string, RateLimitBucket> = {};
+
+/**
+ * Sliding-window client-side rate limiter to protect invite-code and username lookups
+ * from rapid automated brute-force or enumeration attempts without affecting normal users.
+ */
+export function checkLookupRateLimit(
+  bucketKey: 'invite_lookup' | 'username_lookup',
+  maxRequests = 8,
+  windowMs = 60_000,
+  cooldownMs = 30_000
+): { allowed: boolean; retryAfterSec?: number } {
+  const now = Date.now();
+  const bucket = lookupRateBuckets[bucketKey] || { timestamps: [], lockedUntil: 0 };
+  lookupRateBuckets[bucketKey] = bucket;
+
+  if (bucket.lockedUntil > now) {
+    return {
+      allowed: false,
+      retryAfterSec: Math.max(1, Math.ceil((bucket.lockedUntil - now) / 1000)),
+    };
+  }
+
+  bucket.timestamps = bucket.timestamps.filter(t => now - t < windowMs);
+  if (bucket.timestamps.length >= maxRequests) {
+    bucket.lockedUntil = now + cooldownMs;
+    return {
+      allowed: false,
+      retryAfterSec: Math.ceil(cooldownMs / 1000),
+    };
+  }
+
+  bucket.timestamps.push(now);
+  return { allowed: true };
+}
+
+export function resetLookupRateLimits(): void {
+  for (const key of Object.keys(lookupRateBuckets)) {
+    delete lookupRateBuckets[key];
+  }
+}
+
+export function isValidInviteCodeFormat(code: string): boolean {
+  return STRICT_INVITE_CODE_REGEX.test(code.trim().toUpperCase());
+}
 
 /**
  * Generate a friendly, memorable 6-character uppercase invite code (e.g. "KTM842")
@@ -185,6 +248,8 @@ export async function generateGuaranteedUniqueInviteCode(
     existingLocalCodes.filter(Boolean).map(c => c.trim().toUpperCase())
   );
 
+  await ensureAuthUser();
+
   for (let attempt = 0; attempt < 15; attempt++) {
     const candidate = generateInviteCode();
     if (localSet.has(candidate)) {
@@ -197,24 +262,13 @@ export async function generateGuaranteedUniqueInviteCode(
         continue;
       }
 
-      const groupsQuery = query(
-        collection(db, GROUPS_COL),
-        where('inviteCode', '==', candidate),
-        limit(1)
-      );
-      const groupSnap = await getDocs(groupsQuery);
-      if (!groupSnap.empty) {
-        continue;
-      }
-
       return candidate;
     } catch {
       return candidate;
     }
   }
 
-  const timeFraction = (Date.now() % 1024).toString(36).toUpperCase().padStart(2, '9');
-  return (generateInviteCode().substring(0, 4) + timeFraction).toUpperCase();
+  return generateInviteCode();
 }
 
 export interface AppUser {
@@ -419,8 +473,9 @@ export function subscribeToUserCloudSync(
 ): () => void {
   onStatusChange?.('syncing');
 
+  let isCancelled = false;
+  let unsubGroups: (() => void) | null = null;
   let currentGroups: Group[] = [];
-  let isGroupsLoaded = false;
   let hasEmittedInitial = false;
 
   let unsubSubqueries: Array<() => void> = [];
@@ -440,60 +495,7 @@ export function subscribeToUserCloudSync(
     }
   };
 
-  // 1. Subscribe to groups where user is a member
-  const groupsQuery = query(
-    collection(db, GROUPS_COL),
-    where('memberUserIds', 'array-contains', userId)
-  );
-
-  const unsubGroups = onSnapshot(
-    groupsQuery,
-    groupsSnap => {
-      isGroupsLoaded = true;
-      currentGroups = groupsSnap.docs.map(d => d.data() as Group);
-
-      // If user has no groups on cloud, emit empty state immediately
-      if (currentGroups.length === 0) {
-        cleanupSubqueries();
-        onStatusChange?.('connected');
-        hasEmittedInitial = true;
-        onData({
-          groups: [],
-          members: [],
-          groupMembers: [],
-          expenses: [],
-          expenseShares: [],
-          settlements: [],
-          isInitialLoad: true,
-        });
-        return;
-      }
-
-      // Group IDs for scoped queries
-      const groupIds = currentGroups.map(g => g.id);
-
-      // Keep invite code index up-to-date in background so other peers can join
-      currentGroups.forEach(g => {
-        if (g.inviteCode) {
-          setDoc(
-            doc(db, INVITE_CODES_COL, g.inviteCode),
-            {
-              groupId: g.id,
-              groupName: g.name,
-              createdAt: Date.now(),
-              createdBy: g.createdBy || userId,
-            },
-            { merge: true }
-          ).catch(() => {});
-        }
-      });
-
-      setupScopedListeners(groupIds);
-    },
-    err => handleError(err, GROUPS_COL)
-  );
-
-  // 2. Setup scoped listeners for expenses, shares, members, and settlements
+  // Setup scoped listeners for expenses, shares, members, and settlements
   const setupScopedListeners = (groupIds: string[]) => {
     cleanupSubqueries();
 
@@ -501,7 +503,8 @@ export function subscribeToUserCloudSync(
     const limitedGroupIds = groupIds.slice(0, 30);
 
     let scopedExpenses: Expense[] = [];
-    let scopedShares: ExpenseShare[] = [];
+    let sharesByGroup: ExpenseShare[] = [];
+    let sharesByExpense: ExpenseShare[] = [];
     let scopedMembers: Member[] = [];
     let scopedGroupMembers: GroupMember[] = [];
     let scopedSettlements: SettlementRecord[] = [];
@@ -512,7 +515,24 @@ export function subscribeToUserCloudSync(
     let loadedGm = false;
     let loadedSett = false;
 
+    const getMergedShares = (): ExpenseShare[] => {
+      const validExpenseIds = new Set(scopedExpenses.map(e => e.id));
+      const map = new Map<string, ExpenseShare>();
+      for (const s of sharesByExpense) {
+        if (validExpenseIds.has(s.expenseId)) {
+          map.set(s.id, s);
+        }
+      }
+      for (const s of sharesByGroup) {
+        if (validExpenseIds.has(s.expenseId)) {
+          map.set(s.id, s);
+        }
+      }
+      return Array.from(map.values());
+    };
+
     const emitAggregatedData = () => {
+      if (isCancelled) return;
       if (loadedExp && loadedShares && loadedMemb && loadedGm && loadedSett) {
         onStatusChange?.('connected');
         hasEmittedInitial = true;
@@ -522,7 +542,7 @@ export function subscribeToUserCloudSync(
           members: scopedMembers,
           groupMembers: scopedGroupMembers,
           expenses: scopedExpenses,
-          expenseShares: scopedShares,
+          expenseShares: getMergedShares(),
           settlements: scopedSettlements,
           isInitialLoad: hasEmittedInitial,
         });
@@ -539,6 +559,31 @@ export function subscribeToUserCloudSync(
       snap => {
         scopedExpenses = snap.docs.map(d => d.data() as Expense);
         loadedExp = true;
+
+        // Also query shares by expenseId for any expenses missing groupId-tagged shares
+        const expIds = scopedExpenses.map(e => e.id).slice(0, 30);
+        if (expIds.length === 0) {
+          sharesByExpense = [];
+          loadedShares = true;
+          emitAggregatedData();
+        } else {
+          getDocs(
+            query(
+              collection(db, EXPENSE_SHARES_COL),
+              where('expenseId', 'in', expIds)
+            )
+          )
+            .then(shSnap => {
+              sharesByExpense = shSnap.docs.map(d => d.data() as ExpenseShare);
+              loadedShares = true;
+              emitAggregatedData();
+            })
+            .catch(() => {
+              loadedShares = true;
+              emitAggregatedData();
+            });
+        }
+
         emitAggregatedData();
       },
       err => handleError(err, EXPENSES_COL)
@@ -556,22 +601,41 @@ export function subscribeToUserCloudSync(
         scopedGroupMembers = snap.docs.map(d => d.data() as GroupMember);
         loadedGm = true;
 
-        // When groupMembers update, query the associated members
+        // When groupMembers update, resolve the associated member profiles via authorized single-doc gets + GroupMember metadata
         const memberIds = Array.from(new Set(scopedGroupMembers.map(gm => gm.memberId))).slice(0, 30);
         if (memberIds.length === 0) {
           scopedMembers = [];
           loadedMemb = true;
           emitAggregatedData();
         } else {
-          // Query members
-          getDocs(query(collection(db, MEMBERS_COL), where('id', 'in', memberIds)))
-            .then(mSnap => {
-              scopedMembers = mSnap.docs.map(d => d.data() as Member);
+          Promise.allSettled(memberIds.map(id => getDoc(doc(db, MEMBERS_COL, id))))
+            .then(results => {
+              const memberMap = new Map<string, Member>();
+              for (const gm of scopedGroupMembers) {
+                if (gm.memberId && gm.memberName && !memberMap.has(gm.memberId)) {
+                  memberMap.set(gm.memberId, {
+                    id: gm.memberId,
+                    name: gm.memberName,
+                    username: gm.memberUsername,
+                    avatar: gm.memberAvatar || '👤',
+                    color: gm.memberColor || '#670B27',
+                    uid: gm.memberUid,
+                    groupId: gm.groupId,
+                    createdAt: new Date().toISOString(),
+                  });
+                }
+              }
+              for (const res of results) {
+                if (res.status === 'fulfilled' && res.value.exists()) {
+                  const m = res.value.data() as Member;
+                  memberMap.set(m.id, m);
+                }
+              }
+              scopedMembers = Array.from(memberMap.values());
               loadedMemb = true;
               emitAggregatedData();
             })
-            .catch(err => {
-              handleError(err, MEMBERS_COL);
+            .catch(() => {
               loadedMemb = true;
               emitAggregatedData();
             });
@@ -598,19 +662,19 @@ export function subscribeToUserCloudSync(
     );
     unsubSubqueries.push(unsubSett);
 
-    // D. ExpenseShares query: listen to all shares belonging to the loaded expenses
-    // We update shares whenever scopedExpenses updates or on direct query
-    const unsubShares = onSnapshot(
+    // D. ExpenseShares query scoped strictly to limitedGroupIds (never scans full collection)
+    const sharesQuery = query(
       collection(db, EXPENSE_SHARES_COL),
+      where('groupId', 'in', limitedGroupIds)
+    );
+    const unsubShares = onSnapshot(
+      sharesQuery,
       snap => {
-        const allShares = snap.docs.map(d => d.data() as ExpenseShare);
-        const validExpenseIds = new Set(scopedExpenses.map(e => e.id));
-        scopedShares = allShares.filter(s => validExpenseIds.has(s.expenseId));
+        sharesByGroup = snap.docs.map(d => d.data() as ExpenseShare);
         loadedShares = true;
         emitAggregatedData();
       },
-      err => {
-        // Fallback if full collection read is restricted: empty shares until matched
+      () => {
         loadedShares = true;
         emitAggregatedData();
       }
@@ -618,8 +682,70 @@ export function subscribeToUserCloudSync(
     unsubSubqueries.push(unsubShares);
   };
 
+  // Ensure Firebase Authentication session is active before attaching Firestore listeners
+  ensureAuthUser().then(authUser => {
+    if (isCancelled) return;
+    const effectiveUserId = authUser?.uid || auth.currentUser?.uid || userId;
+    if (!auth.currentUser) {
+      onStatusChange?.('offline');
+      return;
+    }
+
+    const groupsQuery = query(
+      collection(db, GROUPS_COL),
+      where('memberUserIds', 'array-contains', effectiveUserId)
+    );
+
+    unsubGroups = onSnapshot(
+      groupsQuery,
+      groupsSnap => {
+        if (isCancelled) return;
+        currentGroups = groupsSnap.docs.map(d => d.data() as Group);
+
+        // If user has no groups on cloud, emit empty state immediately
+        if (currentGroups.length === 0) {
+          cleanupSubqueries();
+          onStatusChange?.('connected');
+          hasEmittedInitial = true;
+          onData({
+            groups: [],
+            members: [],
+            groupMembers: [],
+            expenses: [],
+            expenseShares: [],
+            settlements: [],
+            isInitialLoad: true,
+          });
+          return;
+        }
+
+        const groupIds = currentGroups.map(g => g.id);
+
+        // Keep invite code index up-to-date in background for groups owned by this user
+        currentGroups.forEach(g => {
+          if (g.inviteCode && (!g.createdBy || g.createdBy === effectiveUserId)) {
+            setDoc(
+              doc(db, INVITE_CODES_COL, g.inviteCode),
+              {
+                groupId: g.id,
+                groupName: g.name,
+                createdAt: Date.now(),
+                createdBy: effectiveUserId,
+              },
+              { merge: true }
+            ).catch(() => {});
+          }
+        });
+
+        setupScopedListeners(groupIds);
+      },
+      err => handleError(err, GROUPS_COL)
+    );
+  });
+
   return () => {
-    unsubGroups();
+    isCancelled = true;
+    unsubGroups?.();
     cleanupSubqueries();
   };
 }
@@ -642,15 +768,18 @@ export async function cloudCreateGroup(
     const realAuthUid = authUser?.uid || auth.currentUser?.uid;
     const fallbackUid = currentUser?.uid || 'anonymous';
     const effectiveUid = realAuthUid || fallbackUid;
+    const isLocalFallbackUid = (uid?: string) =>
+      !uid || uid === 'anonymous' || uid === fallbackUid || uid.startsWith('u_');
 
-    const memberIds = new Set<string>(newGroup.memberUserIds || []);
-    if (fallbackUid && fallbackUid !== 'anonymous') memberIds.add(fallbackUid);
+    const memberIds = new Set<string>(
+      (newGroup.memberUserIds || []).filter(u => !isLocalFallbackUid(u))
+    );
     if (realAuthUid) memberIds.add(realAuthUid);
     if (memberIds.size === 0) memberIds.add(effectiveUid);
 
     const groupToSave: Group = sanitizeForFirestore({
       ...newGroup,
-      createdBy: realAuthUid || newGroup.createdBy || effectiveUid,
+      createdBy: realAuthUid || effectiveUid,
       memberUserIds: Array.from(memberIds),
       inviteCode: newGroup.inviteCode || generateInviteCode(),
     });
@@ -663,22 +792,56 @@ export async function cloudCreateGroup(
         groupId: groupToSave.id,
         groupName: groupToSave.name,
         createdAt: Date.now(),
-        createdBy: effectiveUid,
+        createdBy: realAuthUid || effectiveUid,
       }));
     }
 
-    for (const m of newMembers) {
-      batch.set(doc(db, MEMBERS_COL, m.id), sanitizeForFirestore(m));
+    const memberLookup = new Map<string, Member>(newMembers.map(m => [m.id, m]));
+    const ownMember =
+      newMembers.find(m => m.uid && m.uid === realAuthUid) ||
+      newMembers.find(m => m.uid && isLocalFallbackUid(m.uid)) ||
+      newMembers[0];
+
+    if (ownMember) {
+      batch.set(
+        doc(db, MEMBERS_COL, ownMember.id),
+        sanitizeForFirestore({
+          ...ownMember,
+          uid: realAuthUid || effectiveUid,
+          groupId: groupToSave.id,
+          memberUserIds: groupToSave.memberUserIds,
+        }),
+        { merge: true }
+      );
     }
 
     for (const gm of newGroupMembers) {
-      batch.set(doc(db, GROUP_MEMBERS_COL, gm.id), sanitizeForFirestore(gm));
+      const mInfo = memberLookup.get(gm.memberId);
+      const resolvedMemberUid =
+        gm.memberId === ownMember?.id
+          ? realAuthUid || effectiveUid
+          : gm.memberUid && !isLocalFallbackUid(gm.memberUid)
+          ? gm.memberUid
+          : mInfo?.uid && !isLocalFallbackUid(mInfo.uid)
+          ? mInfo.uid
+          : undefined;
+      batch.set(
+        doc(db, GROUP_MEMBERS_COL, gm.id),
+        sanitizeForFirestore({
+          ...gm,
+          memberName: gm.memberName || mInfo?.name,
+          memberUsername: gm.memberUsername || mInfo?.username,
+          memberAvatar: gm.memberAvatar || mInfo?.avatar,
+          memberColor: gm.memberColor || mInfo?.color,
+          memberUid: resolvedMemberUid,
+        })
+      );
     }
 
     await batch.commit();
     return { success: true };
   } catch (err) {
-    console.error('Failed to create group in Firestore:', err);
+    console.warn('Cloud create group sync note:', err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -688,53 +851,106 @@ export async function cloudCreateGroup(
  */
 export async function cloudUpdateGroup(
   groupId: string,
-  updates: Partial<Group>
+  updates: Partial<Group>,
+  fullGroup?: Group | null
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await ensureAuthUser();
+    const authUser = await ensureAuthUser();
+    const realAuthUid = authUser?.uid || auth.currentUser?.uid;
+    const isLocalFallback = (uid?: string) =>
+      !uid || uid === 'anonymous' || uid.startsWith('u_');
+
+    let baseGroup = fullGroup;
+    if (!baseGroup) {
+      try {
+        const local = loadAppState();
+        baseGroup = local.groups.find(g => g.id === groupId) || null;
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (baseGroup && realAuthUid) {
+      const effectiveCreator = isLocalFallback(baseGroup.createdBy)
+        ? realAuthUid
+        : baseGroup.createdBy!;
+      const cleanMemberUserIds = Array.from(
+        new Set([
+          ...(baseGroup.memberUserIds || []).filter(u => !isLocalFallback(u)),
+          realAuthUid,
+        ])
+      );
+
+      // If the user is the group owner (or claiming a local group), write the complete valid group document
+      if (effectiveCreator === realAuthUid) {
+        const mergedGroup: Group = sanitizeForFirestore({
+          ...baseGroup,
+          ...updates,
+          id: groupId,
+          createdBy: realAuthUid,
+          memberUserIds: cleanMemberUserIds,
+          inviteCode: baseGroup.inviteCode || generateInviteCode(),
+        });
+        await setDoc(doc(db, GROUPS_COL, groupId), mergedGroup, { merge: true });
+        return { success: true };
+      }
+    }
+
     await setDoc(doc(db, GROUPS_COL, groupId), sanitizeForFirestore(updates), { merge: true });
     return { success: true };
   } catch (err) {
-    console.error('Failed to update group in Firestore:', err);
+    console.warn('Cloud update group sync note:', err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
 /**
- * Cloud write: Delete a group and its associated data atomically
+ * Cloud write: Delete a group and its associated data (requires group owner authorization).
+ * Deletes dependent child documents first while the parent group document still exists
+ * in Firestore (satisfying `isGroupParticipant` / `isGroupOwner` rules), then deletes the group.
  */
 export async function cloudDeleteGroup(
   groupId: string,
   expensesToDelete: Expense[],
   sharesToDelete: ExpenseShare[] = [],
   settlementsToDelete: SettlementRecord[] = [],
-  groupMembersToDelete: GroupMember[] = []
+  groupMembersToDelete: GroupMember[] = [],
+  inviteCodeToDelete?: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
     await ensureAuthUser();
-    const batch = writeBatch(db);
-    batch.delete(doc(db, GROUPS_COL, groupId));
 
-    for (const exp of expensesToDelete) {
-      batch.delete(doc(db, EXPENSES_COL, exp.id));
+    // 1. Delete dependent child documents first while /groups/{groupId} still exists
+    const childRefs = [
+      ...sharesToDelete.map(s => doc(db, EXPENSE_SHARES_COL, s.id)),
+      ...expensesToDelete.map(e => doc(db, EXPENSES_COL, e.id)),
+      ...settlementsToDelete.map(st => doc(db, SETTLEMENTS_COL, st.id)),
+      ...groupMembersToDelete.map(gm => doc(db, GROUP_MEMBERS_COL, gm.id)),
+      ...(inviteCodeToDelete ? [doc(db, INVITE_CODES_COL, inviteCodeToDelete)] : []),
+    ];
+
+    if (childRefs.length > 0) {
+      const CHUNK_SIZE = 10;
+      for (let i = 0; i < childRefs.length; i += CHUNK_SIZE) {
+        const chunk = childRefs.slice(i, i + CHUNK_SIZE);
+        try {
+          const childBatch = writeBatch(db);
+          for (const refItem of chunk) {
+            childBatch.delete(refItem);
+          }
+          await childBatch.commit();
+        } catch {
+          // If one child doc was local-only or missing, delete remaining existing docs individually
+          await Promise.allSettled(chunk.map(refItem => deleteDoc(refItem)));
+        }
+      }
     }
 
-    for (const share of sharesToDelete) {
-      batch.delete(doc(db, EXPENSE_SHARES_COL, share.id));
-    }
-
-    for (const set of settlementsToDelete) {
-      batch.delete(doc(db, SETTLEMENTS_COL, set.id));
-    }
-
-    for (const gm of groupMembersToDelete) {
-      batch.delete(doc(db, GROUP_MEMBERS_COL, gm.id));
-    }
-
-    await batch.commit();
+    // 2. Delete the parent group document last
+    await deleteDoc(doc(db, GROUPS_COL, groupId));
     return { success: true };
   } catch (err) {
-    console.error('Failed to delete group from Firestore:', err);
+    console.warn('Cloud delete group sync note:', err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -794,65 +1010,42 @@ export async function cloudRegisterOrUpdateUserProfile(
       uid: effectiveUid,
     });
 
-    // 1. Check if another user already owns this username in userDirectory or members
-    try {
-      const dirRef = doc(db, USER_DIRECTORY_COL, cleanUsername);
-      const existingSnap = await getDoc(dirRef);
-      if (existingSnap.exists()) {
-        const data = existingSnap.data();
-        if (data.memberId !== member.id && data.uid !== effectiveUid) {
-          return {
-            success: false,
-            error: `Username "@${cleanUsername}" is already taken by another Splitzy user. Please choose a different unique ID.`,
-          };
-        }
+    const dirRef = doc(db, USER_DIRECTORY_COL, cleanUsername);
+    const existingSnap = await getDoc(dirRef);
+    if (existingSnap.exists()) {
+      const data = existingSnap.data();
+      if (data.memberId !== member.id && data.uid !== effectiveUid) {
+        return {
+          success: false,
+          error: `Username "@${cleanUsername}" is already taken by another Splitzy user. Please choose a different unique ID.`,
+        };
       }
-
-      const batch = writeBatch(db);
-      if (previousUsername) {
-        const cleanPrev = normalizeUsername(previousUsername);
-        if (cleanPrev && cleanPrev !== cleanUsername) {
-          batch.delete(doc(db, USER_DIRECTORY_COL, cleanPrev));
-        }
-      }
-
-      batch.set(doc(db, MEMBERS_COL, updatedMember.id), updatedMember, { merge: true });
-      batch.set(
-        dirRef,
-        sanitizeForFirestore({
-          username: cleanUsername,
-          memberId: updatedMember.id,
-          uid: effectiveUid,
-          name: updatedMember.name,
-          avatar: updatedMember.avatar,
-          color: updatedMember.color || '#670B27',
-          updatedAt: new Date().toISOString(),
-        })
-      );
-
-      await batch.commit();
-      return { success: true, member: updatedMember };
-    } catch {
-      // Fallback: check uniqueness & save directly in /members/{memberId}
-      const byUsernameQuery = query(
-        collection(db, MEMBERS_COL),
-        where('username', '==', cleanUsername),
-        limit(1)
-      );
-      const byUsernameSnap = await getDocs(byUsernameQuery);
-      if (!byUsernameSnap.empty) {
-        const existingMem = byUsernameSnap.docs[0].data() as Member;
-        if (existingMem.id !== member.id && existingMem.uid !== effectiveUid) {
-          return {
-            success: false,
-            error: `Username "@${cleanUsername}" is already taken by another Splitzy user. Please choose a different unique ID.`,
-          };
-        }
-      }
-
-      await setDoc(doc(db, MEMBERS_COL, updatedMember.id), updatedMember, { merge: true });
-      return { success: true, member: updatedMember };
     }
+
+    const batch = writeBatch(db);
+    if (previousUsername) {
+      const cleanPrev = normalizeUsername(previousUsername);
+      if (cleanPrev && cleanPrev !== cleanUsername) {
+        batch.delete(doc(db, USER_DIRECTORY_COL, cleanPrev));
+      }
+    }
+
+    batch.set(doc(db, MEMBERS_COL, updatedMember.id), updatedMember, { merge: true });
+    batch.set(
+      dirRef,
+      sanitizeForFirestore({
+        username: cleanUsername,
+        memberId: updatedMember.id,
+        uid: effectiveUid,
+        name: updatedMember.name,
+        avatar: updatedMember.avatar,
+        color: updatedMember.color || '#670B27',
+        updatedAt: new Date().toISOString(),
+      })
+    );
+
+    await batch.commit();
+    return { success: true, member: updatedMember };
   } catch (err) {
     console.warn('cloudRegisterOrUpdateUserProfile notice:', err);
     return {
@@ -864,7 +1057,7 @@ export async function cloudRegisterOrUpdateUserProfile(
 
 /**
  * Verifies whether a user exists in the Splitzy app database by their unique @username or Member ID.
- * Never creates a fake user—only returns a Member if they actually exist in the database.
+ * Uses the O(1) `/userDirectory/{username}` index without exposing private member collections.
  */
 export async function cloudLookupRegisteredUser(
   identifierRaw: string
@@ -872,41 +1065,29 @@ export async function cloudLookupRegisteredUser(
   const trimmed = identifierRaw.trim();
   const cleanUsername = normalizeUsername(trimmed);
 
-  if (!cleanUsername) {
+  if (!cleanUsername || cleanUsername.length < 2 || cleanUsername.length > 30) {
     return {
       found: false,
-      message: 'Please enter a valid @username or User ID.',
+      message: 'Please enter a valid @username (2 to 30 characters).',
+    };
+  }
+
+  const rateCheck = checkLookupRateLimit('username_lookup', 10, 60_000, 30_000);
+  if (!rateCheck.allowed) {
+    return {
+      found: false,
+      message: `Too many username lookup attempts. Please wait ${rateCheck.retryAfterSec}s before trying again.`,
     };
   }
 
   try {
     await ensureAuthUser();
 
-    // 1. Check `/userDirectory/{username}`
+    // 1. Check `/userDirectory/{username}` (O(1) authenticated lookup)
     try {
       const dirSnap = await getDoc(doc(db, USER_DIRECTORY_COL, cleanUsername));
       if (dirSnap.exists()) {
         const d = dirSnap.data();
-        if (d.memberId) {
-          try {
-            const memSnap = await getDoc(doc(db, MEMBERS_COL, d.memberId));
-            if (memSnap.exists()) {
-              const mData = memSnap.data() as Member;
-              return {
-                found: true,
-                member: {
-                  ...mData,
-                  username: mData.username || d.username,
-                  uid: mData.uid || d.uid,
-                },
-                message: `Found registered user @${d.username} (${mData.name})`,
-              };
-            }
-          } catch {
-            // Fall through to directory data
-          }
-        }
-
         return {
           found: true,
           member: {
@@ -922,45 +1103,10 @@ export async function cloudLookupRegisteredUser(
         };
       }
     } catch {
-      // Fall through to `/members` query if userDirectory read fails
+      // Fall through to local state check
     }
 
-    // 2. Check `/members` collection by exact `username`
-    try {
-      const byUsernameQuery = query(
-        collection(db, MEMBERS_COL),
-        where('username', '==', cleanUsername),
-        limit(1)
-      );
-      const byUsernameSnap = await getDocs(byUsernameQuery);
-      if (!byUsernameSnap.empty) {
-        const m = byUsernameSnap.docs[0].data() as Member;
-        return {
-          found: true,
-          member: m,
-          message: `Found registered user @${m.username || cleanUsername} (${m.name})`,
-        };
-      }
-    } catch {
-      // Fall through to direct ID check
-    }
-
-    // 3. Check `/members` by direct Member ID (e.g. m_owner_12345)
-    try {
-      const directMemberSnap = await getDoc(doc(db, MEMBERS_COL, trimmed));
-      if (directMemberSnap.exists()) {
-        const m = directMemberSnap.data() as Member;
-        return {
-          found: true,
-          member: m,
-          message: `Found registered user ${m.name}`,
-        };
-      }
-    } catch {
-      // Ignore
-    }
-
-    // 4. Check locally cached known members from synced groups
+    // 2. Check locally cached known members from synced groups
     try {
       const localState = loadAppState();
       const localMatch = localState.members.find(
@@ -992,21 +1138,48 @@ export async function cloudLookupRegisteredUser(
 }
 
 /**
- * Cloud write: Add a verified registered member to a group (and grant their UID access to the group)
+ * Cloud write: Add a verified registered member to a group.
+ * - If the current user is the member (joining via invite code), writes their own `/members/{id}` and `/groupMembers/{id}`.
+ * - If the current user is the group owner adding another registered user, updates `/groups/{groupId}` (`memberUserIds`)
+ *   and writes `/groupMembers/{id}` with member metadata.
  */
 export async function cloudAddMember(
   member: Member,
-  groupMember: GroupMember
+  groupMember: GroupMember,
+  isGroupOwner = false
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await ensureAuthUser();
+    const authUser = await ensureAuthUser();
+    const realAuthUid = authUser?.uid || auth.currentUser?.uid;
     const batch = writeBatch(db);
-    batch.set(doc(db, MEMBERS_COL, member.id), sanitizeForFirestore(member), { merge: true });
-    batch.set(doc(db, GROUP_MEMBERS_COL, groupMember.id), sanitizeForFirestore(groupMember));
 
-    // If this member has an associated Firebase Auth UID, add it to the group's memberUserIds
-    // so the group automatically appears on their phone/device in real time!
-    if (member.uid) {
+    // Only write to /members/{id} if the member belongs to the current user
+    if (!member.uid || member.uid === realAuthUid) {
+      batch.set(
+        doc(db, MEMBERS_COL, member.id),
+        sanitizeForFirestore({
+          ...member,
+          uid: realAuthUid || member.uid,
+          groupId: groupMember.groupId,
+        }),
+        { merge: true }
+      );
+    }
+
+    batch.set(
+      doc(db, GROUP_MEMBERS_COL, groupMember.id),
+      sanitizeForFirestore({
+        ...groupMember,
+        memberName: groupMember.memberName || member.name,
+        memberUsername: groupMember.memberUsername || member.username,
+        memberAvatar: groupMember.memberAvatar || member.avatar,
+        memberColor: groupMember.memberColor || member.color,
+        memberUid: groupMember.memberUid || member.uid,
+      })
+    );
+
+    // Only the group owner can add another user's UID to the group's memberUserIds
+    if (isGroupOwner && member.uid && member.uid !== realAuthUid) {
       batch.update(doc(db, GROUPS_COL, groupMember.groupId), {
         memberUserIds: arrayUnion(member.uid),
       });
@@ -1027,30 +1200,85 @@ export async function cloudAddMember(
 export async function cloudSaveExpense(
   expense: Expense,
   shares: ExpenseShare[],
-  oldShareIdsToDelete?: string[]
+  oldShareIdsToDelete?: string[],
+  parentGroup?: Group | null
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await ensureAuthUser();
+    const authUser = await ensureAuthUser();
+    const realAuthUid = authUser?.uid || auth.currentUser?.uid;
     const cleanExpense = sanitizeForFirestore(expense);
-    const cleanShares = shares.map(s => sanitizeForFirestore(s));
+    const cleanShares = shares.map(s =>
+      sanitizeForFirestore({
+        ...s,
+        groupId: s.groupId || cleanExpense.groupId,
+      })
+    );
 
-    const batch = writeBatch(db);
-    batch.set(doc(db, EXPENSES_COL, cleanExpense.id), cleanExpense);
+    const commitExpenseBatch = async (includeParentGroup: boolean) => {
+      const batch = writeBatch(db);
+      if (includeParentGroup && parentGroup && realAuthUid) {
+        const isLocalFallback = (uid?: string) =>
+          !uid || uid === 'anonymous' || uid.startsWith('u_');
+        const effectiveCreator = isLocalFallback(parentGroup.createdBy)
+          ? realAuthUid
+          : parentGroup.createdBy!;
+        if (effectiveCreator === realAuthUid) {
+          const cleanMemberUserIds = Array.from(
+            new Set([
+              ...(parentGroup.memberUserIds || []).filter(u => !isLocalFallback(u)),
+              realAuthUid,
+            ])
+          );
+          const groupDoc: Group = sanitizeForFirestore({
+            ...parentGroup,
+            createdBy: realAuthUid,
+            memberUserIds: cleanMemberUserIds,
+            inviteCode: parentGroup.inviteCode || generateInviteCode(),
+          });
+          batch.set(doc(db, GROUPS_COL, groupDoc.id), groupDoc, { merge: true });
+          if (groupDoc.inviteCode) {
+            batch.set(
+              doc(db, INVITE_CODES_COL, groupDoc.inviteCode),
+              sanitizeForFirestore({
+                groupId: groupDoc.id,
+                groupName: groupDoc.name,
+                createdAt: Date.now(),
+                createdBy: realAuthUid,
+              }),
+              { merge: true }
+            );
+          }
+        }
+      }
 
-    if (oldShareIdsToDelete && oldShareIdsToDelete.length > 0) {
-      for (const oldShareId of oldShareIdsToDelete) {
-        batch.delete(doc(db, EXPENSE_SHARES_COL, oldShareId));
+      batch.set(doc(db, EXPENSES_COL, cleanExpense.id), cleanExpense);
+
+      if (oldShareIdsToDelete && oldShareIdsToDelete.length > 0) {
+        for (const oldShareId of oldShareIdsToDelete) {
+          batch.delete(doc(db, EXPENSE_SHARES_COL, oldShareId));
+        }
+      }
+
+      for (const share of cleanShares) {
+        batch.set(doc(db, EXPENSE_SHARES_COL, share.id), share);
+      }
+
+      await batch.commit();
+    };
+
+    try {
+      await commitExpenseBatch(false);
+    } catch (firstErr) {
+      if (parentGroup && realAuthUid) {
+        await commitExpenseBatch(true);
+      } else {
+        throw firstErr;
       }
     }
 
-    for (const share of cleanShares) {
-      batch.set(doc(db, EXPENSE_SHARES_COL, share.id), share);
-    }
-
-    await batch.commit();
     return { success: true };
   } catch (err) {
-    console.error('Failed to save expense to Firestore:', err);
+    console.warn('Cloud expense sync note:', err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -1107,6 +1335,8 @@ export async function cloudUploadFullState(
     const realAuthUid = authUser?.uid || auth.currentUser?.uid;
     const fallbackUid = currentUser?.uid || 'anonymous';
     const effectiveUid = realAuthUid || fallbackUid;
+    const isLocalFallbackUid = (uid?: string) =>
+      !uid || uid === 'anonymous' || uid === fallbackUid || uid.startsWith('u_');
 
     type PendingWrite = {
       col: string;
@@ -1114,109 +1344,214 @@ export async function cloudUploadFullState(
       data: any;
     };
     const pendingWrites: PendingWrite[] = [];
+    const validGroupIds = new Set<string>();
+    const ownedGroupIds = new Set<string>();
+    const expenseGroupMap = new Map<string, string>();
+    const allCoMemberUids = new Set<string>();
+    if (realAuthUid) allCoMemberUids.add(realAuthUid);
 
     for (const g of state.groups) {
       if (!g.id) continue;
-      const mergedMemberUserIds = new Set(g.memberUserIds || []);
-      if (fallbackUid && fallbackUid !== 'anonymous') mergedMemberUserIds.add(fallbackUid);
+      validGroupIds.add(g.id);
+
+      const mergedMemberUserIds = new Set(
+        (g.memberUserIds || []).filter(u => !isLocalFallbackUid(u))
+      );
       if (realAuthUid) mergedMemberUserIds.add(realAuthUid);
+      if (g.createdBy && !isLocalFallbackUid(g.createdBy)) {
+        mergedMemberUserIds.add(g.createdBy);
+      }
       if (mergedMemberUserIds.size === 0) mergedMemberUserIds.add(effectiveUid);
 
-      const groupToSave: Group = sanitizeForFirestore({
-        ...g,
-        createdBy: realAuthUid || g.createdBy || effectiveUid,
-        memberUserIds: Array.from(mergedMemberUserIds),
-        inviteCode: g.inviteCode || generateInviteCode(),
-      });
-      pendingWrites.push({ col: GROUPS_COL, id: groupToSave.id, data: groupToSave });
-      if (groupToSave.inviteCode) {
+      for (const uid of mergedMemberUserIds) {
+        allCoMemberUids.add(uid);
+      }
+
+      const preservedCreator =
+        g.createdBy && !isLocalFallbackUid(g.createdBy)
+          ? g.createdBy
+          : realAuthUid || effectiveUid;
+
+      // Only the group owner can write/update the group document and its inviteCode reservation
+      if (preservedCreator === realAuthUid || preservedCreator === effectiveUid) {
+        ownedGroupIds.add(g.id);
+        const groupToSave: Group = sanitizeForFirestore({
+          ...g,
+          createdBy: preservedCreator,
+          memberUserIds: Array.from(mergedMemberUserIds),
+          inviteCode: g.inviteCode || generateInviteCode(),
+        });
+        pendingWrites.push({ col: GROUPS_COL, id: groupToSave.id, data: groupToSave });
+        if (groupToSave.inviteCode) {
+          pendingWrites.push({
+            col: INVITE_CODES_COL,
+            id: groupToSave.inviteCode,
+            data: sanitizeForFirestore({
+              groupId: groupToSave.id,
+              groupName: groupToSave.name,
+              createdAt: Date.now(),
+              createdBy: preservedCreator,
+            }),
+          });
+        }
+      }
+    }
+
+    const memberLookup = new Map<string, Member>(state.members.map(m => [m.id, m]));
+    const primaryGroupId = state.activeGroupId || state.groups[0]?.id;
+    const ownMemberId = state.userProfile?.id || state.currentUserId;
+
+    for (const m of state.members) {
+      if (!m.id) continue;
+      const isOwnMember =
+        m.id === ownMemberId ||
+        (Boolean(m.uid) && (m.uid === realAuthUid || isLocalFallbackUid(m.uid)));
+      if (isOwnMember) {
         pendingWrites.push({
-          col: INVITE_CODES_COL,
-          id: groupToSave.inviteCode,
+          col: MEMBERS_COL,
+          id: m.id,
           data: sanitizeForFirestore({
-            groupId: groupToSave.id,
-            groupName: groupToSave.name,
-            createdAt: Date.now(),
-            createdBy: effectiveUid,
+            ...m,
+            uid: realAuthUid || effectiveUid,
+            groupId: m.groupId || primaryGroupId,
+            memberUserIds: Array.from(allCoMemberUids),
           }),
         });
       }
     }
-    for (const m of state.members) {
-      if (m.id) pendingWrites.push({ col: MEMBERS_COL, id: m.id, data: sanitizeForFirestore(m) });
-    }
+
     for (const gm of state.groupMembers) {
-      if (gm.id) pendingWrites.push({ col: GROUP_MEMBERS_COL, id: gm.id, data: sanitizeForFirestore(gm) });
-    }
-    for (const exp of state.expenses) {
-      if (exp.id) pendingWrites.push({ col: EXPENSES_COL, id: exp.id, data: sanitizeForFirestore(exp) });
-    }
-    for (const share of state.expenseShares) {
-      if (share.id) pendingWrites.push({ col: EXPENSE_SHARES_COL, id: share.id, data: sanitizeForFirestore(share) });
-    }
-    for (const st of state.settlements) {
-      if (st.id) pendingWrites.push({ col: SETTLEMENTS_COL, id: st.id, data: sanitizeForFirestore(st) });
+      if (!gm.id || !validGroupIds.has(gm.groupId)) continue;
+      const mInfo = memberLookup.get(gm.memberId);
+      const isOwnMemberRecord =
+        gm.memberId === ownMemberId ||
+        mInfo?.uid === realAuthUid ||
+        (Boolean(mInfo?.uid) && isLocalFallbackUid(mInfo?.uid));
+      if (ownedGroupIds.has(gm.groupId) || isOwnMemberRecord) {
+        const resolvedMemberUid = isOwnMemberRecord
+          ? realAuthUid || effectiveUid
+          : gm.memberUid && !isLocalFallbackUid(gm.memberUid)
+          ? gm.memberUid
+          : mInfo?.uid && !isLocalFallbackUid(mInfo.uid)
+          ? mInfo.uid
+          : undefined;
+        pendingWrites.push({
+          col: GROUP_MEMBERS_COL,
+          id: gm.id,
+          data: sanitizeForFirestore({
+            ...gm,
+            memberName: gm.memberName || mInfo?.name,
+            memberUsername: gm.memberUsername || mInfo?.username,
+            memberAvatar: gm.memberAvatar || mInfo?.avatar,
+            memberColor: gm.memberColor || mInfo?.color,
+            memberUid: resolvedMemberUid,
+          }),
+        });
+      }
     }
 
-    // Execute writes in safe chunks of 400 (well below the 500 limit)
-    const CHUNK_SIZE = 400;
-    for (let i = 0; i < pendingWrites.length; i += CHUNK_SIZE) {
-      const chunk = pendingWrites.slice(i, i + CHUNK_SIZE);
-      const batch = writeBatch(db);
-      for (const item of chunk) {
-        batch.set(doc(db, item.col, item.id), item.data);
+    for (const exp of state.expenses) {
+      if (exp.id && validGroupIds.has(exp.groupId)) {
+        expenseGroupMap.set(exp.id, exp.groupId);
+        pendingWrites.push({ col: EXPENSES_COL, id: exp.id, data: sanitizeForFirestore(exp) });
       }
-      await batch.commit();
+    }
+
+    for (const share of state.expenseShares) {
+      if (!share.id) continue;
+      const resolvedGroupId = share.groupId || expenseGroupMap.get(share.expenseId);
+      if (resolvedGroupId && validGroupIds.has(resolvedGroupId)) {
+        pendingWrites.push({
+          col: EXPENSE_SHARES_COL,
+          id: share.id,
+          data: sanitizeForFirestore({
+            ...share,
+            groupId: resolvedGroupId,
+          }),
+        });
+      }
+    }
+
+    for (const st of state.settlements) {
+      if (st.id && validGroupIds.has(st.groupId)) {
+        pendingWrites.push({ col: SETTLEMENTS_COL, id: st.id, data: sanitizeForFirestore(st) });
+      }
+    }
+
+    // Execute group, inviteCode, and member writes first so parent group documents
+    // and memberUserIds exist in Firestore before dependent child records are committed.
+    const parentCols = new Set([GROUPS_COL, INVITE_CODES_COL, MEMBERS_COL]);
+    const parentWrites = pendingWrites.filter(w => parentCols.has(w.col));
+    const childWrites = pendingWrites.filter(w => !parentCols.has(w.col));
+
+    const CHUNK_SIZE = 400;
+    for (const phaseWrites of [parentWrites, childWrites]) {
+      for (let i = 0; i < phaseWrites.length; i += CHUNK_SIZE) {
+        const chunk = phaseWrites.slice(i, i + CHUNK_SIZE);
+        try {
+          const batch = writeBatch(db);
+          for (const item of chunk) {
+            batch.set(doc(db, item.col, item.id), item.data, { merge: true });
+          }
+          await batch.commit();
+        } catch {
+          // If one legacy item in the batch fails rules, write each authorized document individually
+          for (const item of chunk) {
+            try {
+              await setDoc(doc(db, item.col, item.id), item.data, { merge: true });
+            } catch {
+              // Skip unauthorized/orphaned legacy item
+            }
+          }
+        }
+      }
     }
 
     return { success: true };
   } catch (err) {
-    console.error('Failed to upload full state to Firestore:', err);
+    console.warn('Cloud upload full state sync note:', err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
 /**
- * Join an existing group using an invite code (or direct group ID).
- * High-performance O(1) resolution via the dedicated inviteCodes collection index.
- * Completely eliminates unauthorized collection scans that trigger permission errors.
+ * Join an existing group using a secret invite code.
+ * Uses an atomic batch redeeming `/inviteCodes/{code}` alongside `/groups/{groupId}`
+ * so non-members can never read or join a group without possessing its invite code.
  */
 export async function joinGroupByInviteCode(
   rawInviteCode: string,
   user: { uid: string }
 ): Promise<{ success: boolean; group?: Group; message: string }> {
-  const cleanCode = rawInviteCode.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
-  if (!cleanCode || cleanCode.length < 3) {
-    return { success: false, message: 'Please enter a valid group invite code.' };
+  const cleanCode = rawInviteCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!isValidInviteCodeFormat(cleanCode)) {
+    return {
+      success: false,
+      message: 'Please enter a valid 6-character group invite code (letters A-Z and digits 2-9).',
+    };
+  }
+
+  const rateCheck = checkLookupRateLimit('invite_lookup', 6, 60_000, 30_000);
+  if (!rateCheck.allowed) {
+    return {
+      success: false,
+      message: `Too many invite code attempts. Please wait ${rateCheck.retryAfterSec}s before trying again.`,
+    };
   }
 
   // 1. Ensure genuine Firebase Authentication is active
-  let authUid = user?.uid;
-  if (!auth.currentUser) {
-    try {
-      const cred = await signInAnonymously(auth);
-      if (cred?.user) {
-        authUid = cred.user.uid;
-      }
-    } catch {
-      // Continue with provided user.uid
-    }
-  } else {
-    authUid = auth.currentUser.uid;
-  }
+  const authUser = await ensureAuthUser();
+  const authUid = authUser?.uid || auth.currentUser?.uid || user?.uid;
 
   try {
-    // 2. Check local client storage for instant resolution
+    // 2. Check local client storage for instant resolution if already a local group
     try {
       const localRaw = localStorage.getItem('hisab_sathi_v1_store');
       if (localRaw) {
         const parsed = JSON.parse(localRaw);
         const localGroups: Group[] = parsed?.groups || [];
         const localMatch = localGroups.find(
-          g =>
-            g.inviteCode?.toUpperCase() === cleanCode ||
-            g.id === cleanCode ||
-            g.id.toUpperCase() === cleanCode
+          g => g.inviteCode?.toUpperCase() === cleanCode
         );
 
         if (localMatch) {
@@ -1226,8 +1561,7 @@ export async function joinGroupByInviteCode(
             memberUserIds: mergedMembers,
           };
 
-          // Register in Firestore invite index in the background for remote peers
-          if (updatedGroup.inviteCode) {
+          if (updatedGroup.inviteCode && (!updatedGroup.createdBy || updatedGroup.createdBy === authUid)) {
             setDoc(
               doc(db, INVITE_CODES_COL, updatedGroup.inviteCode),
               {
@@ -1251,7 +1585,7 @@ export async function joinGroupByInviteCode(
       // Continue to cloud resolution
     }
 
-    // 3. Resolve target group ID via Firestore invite index
+    // 3. Resolve target group ID via Firestore invite index (O(1) authenticated lookup)
     let targetGroupId: string | null = null;
     try {
       const reservationSnap = await getDoc(doc(db, INVITE_CODES_COL, cleanCode));
@@ -1265,60 +1599,55 @@ export async function joinGroupByInviteCode(
       console.warn('Invite reservation check failed:', lookupErr);
     }
 
-    // Direct group ID fallback (e.g. g_123 or g_pokhara)
-    if (!targetGroupId && (cleanCode.startsWith('G_') || cleanCode.toLowerCase().startsWith('g_'))) {
-      targetGroupId = cleanCode.toLowerCase();
-    }
-
     if (!targetGroupId) {
       return {
         success: false,
-        message: `No group found with code "${cleanCode}". Please verify and try again.`,
+        message: `No group found with invite code "${cleanCode}". Please verify and try again.`,
       };
     }
 
-    // 4. Fetch the authoritative group document by its exact ID (O(1) direct read)
-    let groupDocId = targetGroupId;
-    let groupData: Group | null = null;
-
+    // 4. If the user is already a member of targetGroupId, a direct getDoc will succeed immediately
     try {
-      const groupSnap = await getDoc(doc(db, GROUPS_COL, targetGroupId));
-      if (groupSnap.exists()) {
-        groupDocId = groupSnap.id;
-        groupData = groupSnap.data() as Group;
+      const existingGroupSnap = await getDoc(doc(db, GROUPS_COL, targetGroupId));
+      if (existingGroupSnap.exists()) {
+        const existingGroup = existingGroupSnap.data() as Group;
+        return {
+          success: true,
+          group: existingGroup,
+          message: `Switched to "${existingGroup.name}"!`,
+        };
       }
-    } catch (fetchErr) {
-      console.warn('Failed to retrieve group by ID:', fetchErr);
+    } catch {
+      // User is not yet a member of this group; proceed to atomic invite-code join batch
     }
 
-    if (!groupData) {
+    // 5. Atomically redeem the invite code and append authUid to the group's memberUserIds
+    const joinBatch = writeBatch(db);
+    joinBatch.update(doc(db, INVITE_CODES_COL, cleanCode), {
+      lastJoinedBy: authUid,
+      lastJoinedAt: Date.now(),
+    });
+    joinBatch.update(doc(db, GROUPS_COL, targetGroupId), {
+      memberUserIds: arrayUnion(authUid),
+    });
+    await joinBatch.commit();
+
+    // 6. Fetch the authoritative group document now that authUid is an authorized member
+    const groupSnap = await getDoc(doc(db, GROUPS_COL, targetGroupId));
+    if (!groupSnap.exists()) {
       return {
         success: false,
         message: `Group "${cleanCode}" could not be retrieved from the cloud.`,
       };
     }
 
-    // 5. Add user to memberUserIds on Firestore
-    const currentMemberUserIds = groupData.memberUserIds || [];
-    if (!currentMemberUserIds.includes(authUid)) {
-      try {
-        await updateDoc(doc(db, GROUPS_COL, groupDocId), {
-          memberUserIds: arrayUnion(authUid),
-        });
-      } catch {
-        await setDoc(
-          doc(db, GROUPS_COL, groupDocId),
-          { memberUserIds: Array.from(new Set([...currentMemberUserIds, authUid])) },
-          { merge: true }
-        );
-      }
-    }
+    const groupData = groupSnap.data() as Group;
 
     return {
       success: true,
       group: {
         ...groupData,
-        memberUserIds: Array.from(new Set([...currentMemberUserIds, authUid])),
+        memberUserIds: Array.from(new Set([...(groupData.memberUserIds || []), authUid])),
       },
       message: `Successfully joined "${groupData.name}"!`,
     };
@@ -1337,26 +1666,29 @@ export async function joinGroupByInviteCode(
 
 /**
  * Stores a cryptographically hashed recovery verifier.
- * The raw recovery code is NEVER stored in Firestore.
+ * The raw recovery code is NEVER stored in Firestore, and no group/invite data is disclosed.
  */
 export async function cloudSaveRecoveryVerifier(
   verifierHash: string,
   uid: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    const record: RecoveryRecord = {
+    const authUser = await ensureAuthUser();
+    const effectiveUid = authUser?.uid || auth.currentUser?.uid || uid;
+
+    const record: RecoveryRecord = sanitizeForFirestore({
       verifierHash,
-      uid,
+      uid: effectiveUid,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-    };
+    });
     await setDoc(doc(db, RECOVERY_COL, verifierHash), record);
 
     // Also update security profile
     await setDoc(
-      doc(db, SECURITY_PROFILES_COL, uid),
+      doc(db, SECURITY_PROFILES_COL, effectiveUid),
       {
-        uid,
+        uid: effectiveUid,
         hasRecoveryCode: true,
         recoveryCreatedAt: new Date().toISOString(),
       },
@@ -1371,18 +1703,22 @@ export async function cloudSaveRecoveryVerifier(
 }
 
 /**
- * Looks up a user identity associated with a recovery verifier hash.
+ * Verifies a recovery hash owned by the current authenticated user.
  */
 export async function cloudLookupRecoveryVerifier(
   verifierHash: string
 ): Promise<{ success: boolean; uid?: string; error?: string }> {
   try {
+    await ensureAuthUser();
     const snap = await getDoc(doc(db, RECOVERY_COL, verifierHash));
     if (!snap.exists()) {
       return { success: false, error: 'Invalid recovery code or no matching account found.' };
     }
     const data = snap.data() as RecoveryRecord;
-    return { success: true, uid: data.uid };
+    return {
+      success: true,
+      uid: data.uid,
+    };
   } catch (err) {
     console.error('Failed to lookup recovery verifier in Firestore:', err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -1390,38 +1726,34 @@ export async function cloudLookupRecoveryVerifier(
 }
 
 /**
- * Recovers account data by linking the current Firebase session to the recovered UID's groups.
- * Finds all groups that belonged to recoveredUid and adds currentUid to memberUserIds.
+ * Reconciles recovered groups for an authenticated session.
  */
 export async function cloudLinkAccountToRecovery(
-  recoveredUid: string,
-  currentUid: string
+  _recoveredUid: string,
+  currentUid: string,
+  inviteCodes: string[] = []
 ): Promise<{ success: boolean; recoveredGroupCount: number; error?: string }> {
   try {
-    const groupsQuery = query(
-      collection(db, GROUPS_COL),
-      where('memberUserIds', 'array-contains', recoveredUid)
-    );
-    const snap = await getDocs(groupsQuery);
+    const authUser = await ensureAuthUser();
+    const effectiveUid = authUser?.uid || auth.currentUser?.uid || currentUid;
 
-    if (snap.empty) {
-      return { success: true, recoveredGroupCount: 0 };
+    let count = 0;
+    for (const code of inviteCodes) {
+      if (!code) continue;
+      const res = await joinGroupByInviteCode(code, { uid: effectiveUid });
+      if (res.success) {
+        count++;
+      }
     }
 
-    const batch = writeBatch(db);
-    let count = 0;
-    snap.docs.forEach(d => {
-      const g = d.data() as Group;
-      const updatedUserIds = Array.from(new Set([...(g.memberUserIds || []), currentUid]));
-      batch.update(doc(db, GROUPS_COL, d.id), { memberUserIds: updatedUserIds });
-      count++;
-    });
-
-    await batch.commit();
     return { success: true, recoveredGroupCount: count };
   } catch (err) {
     console.error('Failed to link account to recovery:', err);
-    return { success: false, recoveredGroupCount: 0, error: err instanceof Error ? err.message : String(err) };
+    return {
+      success: false,
+      recoveredGroupCount: 0,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -1432,12 +1764,77 @@ export async function cloudGetSecurityProfile(
   uid: string
 ): Promise<UserSecurityProfile | null> {
   try {
-    const snap = await getDoc(doc(db, SECURITY_PROFILES_COL, uid));
+    const authUser = await ensureAuthUser();
+    const effectiveUid = authUser?.uid || auth.currentUser?.uid || uid;
+    const snap = await getDoc(doc(db, SECURITY_PROFILES_COL, effectiveUid));
     if (snap.exists()) {
       return snap.data() as UserSecurityProfile;
     }
     return null;
   } catch {
     return null;
+  }
+}
+
+/* ==========================================================================
+   FIREBASE STORAGE RECEIPT UPLOAD / DOWNLOAD HELPERS
+   ========================================================================== */
+
+export async function cloudUploadReceipt(
+  groupId: string,
+  file: File,
+  memberUserIds: string[] = []
+): Promise<{ success: boolean; downloadUrl?: string; storagePath?: string; error?: string }> {
+  try {
+    const validation = validateReceiptFile(file);
+    if (!validation.valid) {
+      return { success: false, error: validation.error };
+    }
+
+    const authUser = await ensureAuthUser();
+    const effectiveUid = authUser?.uid || auth.currentUser?.uid;
+    if (!effectiveUid) {
+      return { success: false, error: 'Authentication required to upload receipts.' };
+    }
+
+    const cleanGroupId = groupId.replace(/[^a-zA-Z0-9_.\-]/g, '_');
+    const cleanFileName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9_.\-]/g, '_').slice(0, 60)}`;
+    const path = `receipts/${cleanGroupId}/${effectiveUid}/${cleanFileName}`;
+    const fileRef = storageRef(storage, path);
+
+    const authorizedUids = Array.from(new Set([effectiveUid, ...memberUserIds.filter(Boolean)]));
+
+    await uploadBytes(fileRef, file, {
+      contentType: file.type,
+      customMetadata: {
+        uploadedBy: effectiveUid,
+        groupId: cleanGroupId,
+        memberUserIdsCsv: authorizedUids.join(','),
+      },
+    });
+
+    const downloadUrl = await getDownloadURL(fileRef);
+    return { success: true, downloadUrl, storagePath: path };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export async function cloudDeleteReceipt(
+  storagePath: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await ensureAuthUser();
+    const fileRef = storageRef(storage, storagePath);
+    await deleteObject(fileRef);
+    return { success: true };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }

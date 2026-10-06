@@ -6,6 +6,8 @@ export interface Member {
   id: string;
   username?: string; // Unique lowercase handle (e.g. "saroj_88", "user_c") registered in Splitzy DB
   uid?: string; // Authoritative Firebase Auth UID of the registered device/user
+  groupId?: string; // Primary group association for rule-level participant verification
+  memberUserIds?: string[]; // Authorized co-participant UIDs allowed to read this profile
   name: string;
   avatar: string; // Emoji, initials, or uploaded photo dataURL
   color?: string; // Hex or tailwind color class
@@ -30,6 +32,11 @@ export interface GroupMember {
   id: string;
   groupId: string;
   memberId: string;
+  memberName?: string;
+  memberUsername?: string;
+  memberAvatar?: string;
+  memberColor?: string;
+  memberUid?: string;
 }
 
 export interface ExpenseLineItem {
@@ -42,6 +49,7 @@ export interface ExpenseLineItem {
 export interface ExpenseShare {
   id: string;
   expenseId: string;
+  groupId?: string;
   memberId: string;
   shareAmount: number; // in Base Currency minor units (or exact decimal rounded to 2 places)
   splitType: SplitType;

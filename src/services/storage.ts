@@ -8,7 +8,6 @@ import {
   SupportedLanguage,
   UserSecurityProfile,
 } from '../types';
-import { calculateEqualShares } from '../core/calculation';
 
 export interface AppState {
   groups: Group[];
@@ -22,146 +21,33 @@ export interface AppState {
   language: SupportedLanguage;
   currentUserId: string; // for personal balance perspective
   userProfile?: Member; // The primary owner/user profile saved when opening the app
+  pendingGroupIds?: string[]; // IDs of groups created locally in this session pending cloud confirmation
   pendingExpenseIds?: string[]; // IDs of expenses created locally pending cloud confirmation
   deletedExpenseIds?: string[]; // Tombstones to prevent deleted expenses from resurfacing during merge
+  deletedGroupIds?: string[]; // Tombstones to prevent deleted groups from resurfacing during merge
   userSecurityProfile?: UserSecurityProfile;
 }
 
 const STORAGE_KEY = 'hisab_sathi_v1_store';
 const RECOVERY_CODE_STORAGE_KEY = 'hisab_sathi_local_recovery_code';
+const DATA_EPOCH_KEY = 'splitzy_clean_epoch_v5';
+const APP_LOCK_PIN_HASH_KEY = 'splitzy_app_lock_pin_hash';
+const APP_LOCK_ENABLED_KEY = 'splitzy_app_lock_enabled';
+const APP_LOCK_TIMEOUT_MS_KEY = 'splitzy_app_lock_timeout_ms';
+const AUTHORITATIVE_AUTH_UID_KEY = 'hisabsathi_auth_uid';
+const LOCAL_USER_KEY = 'hisabsathi_client_session_user';
 
-export function getInitialDemoState(): AppState {
-  const saroj: Member = {
-    id: 'm_saroj',
-    name: 'Saroj',
-    avatar: '👨‍💻',
-    color: '#059669', // Emerald
-    createdAt: '2026-09-01T08:00:00.000Z',
-  };
-  const ram: Member = {
-    id: 'm_ram',
-    name: 'Ram',
-    avatar: '🧗',
-    color: '#2563eb', // Blue
-    createdAt: '2026-09-01T08:00:00.000Z',
-  };
-  const sita: Member = {
-    id: 'm_sita',
-    name: 'Sita',
-    avatar: '👩‍🎨',
-    color: '#d97706', // Amber
-    createdAt: '2026-09-01T08:00:00.000Z',
-  };
-  const hari: Member = {
-    id: 'm_hari',
-    name: 'Hari',
-    avatar: '📸',
-    color: '#7c3aed', // Purple
-    createdAt: '2026-09-01T08:00:00.000Z',
-  };
-
-  const members = [saroj, ram, sita, hari];
-
-  const pokharaGroup: Group = {
-    id: 'g_pokhara',
-    name: 'Pokhara Trip',
-    baseCurrency: 'NPR',
-    preferredCalendar: 'BS',
-    language: 'ne',
-    inviteCode: 'POKHR2',
-    createdAt: '2026-09-01T08:30:00.000Z',
-  };
-
-  const groupMembers: GroupMember[] = members.map(m => ({
-    id: `gm_${pokharaGroup.id}_${m.id}`,
-    groupId: pokharaGroup.id,
-    memberId: m.id,
-  }));
-
-  // Expense 1: Hotel - NPR 8,000 | Paid by Saroj | Shared by all 4
-  const expHotel: Expense = {
-    id: 'exp_hotel',
-    groupId: pokharaGroup.id,
-    title: 'Hotel',
-    originalAmount: 8000,
-    originalCurrency: 'NPR',
-    exchangeRate: 1,
-    baseAmount: 8000,
-    paidBy: saroj.id,
-    dateISO: '2026-09-01',
-    calendarType: 'BS',
-    category: 'Lodging',
-    notes: 'Lakeside Resort Booking',
-    createdAt: '2026-09-01T10:00:00.000Z',
-  };
-  const hotelShares: ExpenseShare[] = calculateEqualShares(8000, members.map(m => m.id)).map(s => ({
-    id: `es_hotel_${s.memberId}`,
-    expenseId: expHotel.id,
-    memberId: s.memberId,
-    shareAmount: s.shareAmount,
-    splitType: 'equal',
-  }));
-
-  // Expense 2: Dinner - NPR 4,000 | Paid by Ram | Shared by all 4
-  const expDinner: Expense = {
-    id: 'exp_dinner',
-    groupId: pokharaGroup.id,
-    title: 'Dinner',
-    originalAmount: 4000,
-    originalCurrency: 'NPR',
-    exchangeRate: 1,
-    baseAmount: 4000,
-    paidBy: ram.id,
-    dateISO: '2026-09-02',
-    calendarType: 'BS',
-    category: 'Food',
-    notes: 'Thakali Feast',
-    createdAt: '2026-09-02T19:30:00.000Z',
-  };
-  const dinnerShares: ExpenseShare[] = calculateEqualShares(4000, members.map(m => m.id)).map(s => ({
-    id: `es_dinner_${s.memberId}`,
-    expenseId: expDinner.id,
-    memberId: s.memberId,
-    shareAmount: s.shareAmount,
-    splitType: 'equal',
-  }));
-
-  // Expense 3: Taxi - NPR 2,000 | Paid by Sita | Shared by Saroj, Ram, Sita
-  const expTaxi: Expense = {
-    id: 'exp_taxi',
-    groupId: pokharaGroup.id,
-    title: 'Taxi',
-    originalAmount: 2000,
-    originalCurrency: 'NPR',
-    exchangeRate: 1,
-    baseAmount: 2000,
-    paidBy: sita.id,
-    dateISO: '2026-09-03',
-    calendarType: 'BS',
-    category: 'Transport',
-    notes: 'Sarangkot Sunrise Ride',
-    createdAt: '2026-09-03T05:30:00.000Z',
-  };
-  const taxiShares: ExpenseShare[] = calculateEqualShares(2000, [saroj.id, ram.id, sita.id]).map(s => ({
-    id: `es_taxi_${s.memberId}`,
-    expenseId: expTaxi.id,
-    memberId: s.memberId,
-    shareAmount: s.shareAmount,
-    splitType: 'equal',
-  }));
-
-  return {
-    groups: [pokharaGroup],
-    members,
-    groupMembers,
-    expenses: [expHotel, expDinner, expTaxi],
-    expenseShares: [...hotelShares, ...dinnerShares, ...taxiShares],
-    settlements: [],
-    activeGroupId: pokharaGroup.id,
-    theme: 'light',
-    language: 'en',
-    currentUserId: saroj.id,
-  };
+export function clearAllLocalLocksAndSessionKeys(): void {
+  try {
+    localStorage.removeItem(APP_LOCK_PIN_HASH_KEY);
+    localStorage.removeItem(APP_LOCK_ENABLED_KEY);
+    localStorage.removeItem(APP_LOCK_TIMEOUT_MS_KEY);
+    localStorage.removeItem(RECOVERY_CODE_STORAGE_KEY);
+    localStorage.removeItem(AUTHORITATIVE_AUTH_UID_KEY);
+    localStorage.removeItem(LOCAL_USER_KEY);
+  } catch {
+    // Ignore storage errors
+  }
 }
 
 export function getInitialCleanState(): AppState {
@@ -176,21 +62,47 @@ export function getInitialCleanState(): AppState {
     theme: 'light',
     language: 'en',
     currentUserId: '',
+    pendingGroupIds: [],
+    pendingExpenseIds: [],
+    deletedExpenseIds: [],
+    deletedGroupIds: [],
   };
 }
 
 export function loadAppState(): AppState {
   try {
+    const hasMigratedEpoch = localStorage.getItem(DATA_EPOCH_KEY) === '1';
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
+
+    if (!raw || !hasMigratedEpoch) {
+      clearAllLocalLocksAndSessionKeys();
+      localStorage.setItem(DATA_EPOCH_KEY, '1');
       const clean = getInitialCleanState();
       saveAppState(clean);
       return clean;
     }
+
     const parsed = JSON.parse(raw) as Partial<AppState>;
-    // If the stored data contains old demo data (e.g. Pokhara trip), reset to clean state for real use
-    if (parsed.groups?.some(g => g.id === 'g_pokhara')) {
-      const clean = getInitialCleanState();
+
+    // If the stored data contains old demo/stale groups,
+    // reset local storage and PIN lock keys to a 100% clean, empty state.
+    if (
+      parsed.groups?.some(
+        g =>
+          g.id === 'g_pokhara' ||
+          g.id === 'g_1791187741908' ||
+          g.inviteCode === 'KJCAN4' ||
+          g.inviteCode === 'DHUAH3' ||
+          g.name?.includes('September खर्च')
+      )
+    ) {
+      clearAllLocalLocksAndSessionKeys();
+      localStorage.setItem(DATA_EPOCH_KEY, '1');
+      const clean: AppState = {
+        ...getInitialCleanState(),
+        theme: parsed.theme || 'light',
+        language: parsed.language || 'en',
+      };
       saveAppState(clean);
       return clean;
     }
@@ -218,8 +130,10 @@ export function loadAppState(): AppState {
       language: parsed.language || 'en',
       currentUserId: parsed.currentUserId || resolvedUserProfile?.id || '',
       userProfile: resolvedUserProfile,
+      pendingGroupIds: parsed.pendingGroupIds || [],
       pendingExpenseIds: parsed.pendingExpenseIds || [],
       deletedExpenseIds: parsed.deletedExpenseIds || [],
+      deletedGroupIds: parsed.deletedGroupIds || [],
       userSecurityProfile: parsed.userSecurityProfile,
     };
   } catch (err) {
@@ -279,11 +193,30 @@ export function reconcileAppState(
   }
 ): AppState {
   const deletedExpenseSet = new Set(local.deletedExpenseIds || []);
+  const deletedGroupSet = new Set(local.deletedGroupIds || []);
+  const pendingGroupSet = new Set(local.pendingGroupIds || []);
+  const cloudGroupIdSet = new Set(cloud.groups.map(g => g.id));
 
   // 1. Reconcile Groups
   const groupMap = new Map<string, Group>();
-  local.groups.forEach(g => groupMap.set(g.id, g));
+  local.groups.forEach(g => {
+    if (
+      !deletedGroupSet.has(g.id) &&
+      g.inviteCode !== 'KJCAN4' &&
+      !g.name?.includes('September खर्च') &&
+      (cloudGroupIdSet.has(g.id) || pendingGroupSet.has(g.id))
+    ) {
+      groupMap.set(g.id, g);
+    }
+  });
   cloud.groups.forEach(g => {
+    if (
+      deletedGroupSet.has(g.id) ||
+      g.inviteCode === 'KJCAN4' ||
+      g.name?.includes('September खर्च')
+    ) {
+      return;
+    }
     const existing = groupMap.get(g.id);
     if (!existing) {
       groupMap.set(g.id, g);
@@ -300,32 +233,58 @@ export function reconcileAppState(
     }
   });
 
+  const validGroupIdSet = new Set(groupMap.keys());
+
   // 2. Reconcile Members
   const memberMap = new Map<string, Member>();
   if (local.userProfile) {
     memberMap.set(local.userProfile.id, local.userProfile);
   }
-  local.members.forEach(m => memberMap.set(m.id, m));
-  cloud.members.forEach(m => memberMap.set(m.id, m));
+  local.members.forEach(m => {
+    if (!m.groupId || validGroupIdSet.has(m.groupId) || m.id === local.currentUserId) {
+      memberMap.set(m.id, m);
+    }
+  });
+  cloud.members.forEach(m => {
+    if (!m.groupId || validGroupIdSet.has(m.groupId)) {
+      memberMap.set(m.id, m);
+    }
+  });
 
   // 3. Reconcile GroupMembers
   const gmMap = new Map<string, GroupMember>();
-  local.groupMembers.forEach(gm => gmMap.set(gm.id, gm));
-  cloud.groupMembers.forEach(gm => gmMap.set(gm.id, gm));
+  local.groupMembers.forEach(gm => {
+    if (!deletedGroupSet.has(gm.groupId) && validGroupIdSet.has(gm.groupId)) {
+      gmMap.set(gm.id, gm);
+    }
+  });
+  cloud.groupMembers.forEach(gm => {
+    if (!deletedGroupSet.has(gm.groupId) && validGroupIdSet.has(gm.groupId)) {
+      gmMap.set(gm.id, gm);
+    }
+  });
 
   // 4. Reconcile Expenses (CRITICAL: Do not drop local expenses that cloud hasn't received or confirmed yet)
   const expenseMap = new Map<string, Expense>();
   
   // First, insert local expenses that were not explicitly deleted
   local.expenses.forEach(e => {
-    if (!deletedExpenseSet.has(e.id)) {
+    if (
+      !deletedExpenseSet.has(e.id) &&
+      !deletedGroupSet.has(e.groupId) &&
+      validGroupIdSet.has(e.groupId)
+    ) {
       expenseMap.set(e.id, e);
     }
   });
 
   // Next, merge cloud expenses (cloud takes precedence for confirmed state, but ignores tombstoned)
   cloud.expenses.forEach(e => {
-    if (!deletedExpenseSet.has(e.id)) {
+    if (
+      !deletedExpenseSet.has(e.id) &&
+      !deletedGroupSet.has(e.groupId) &&
+      validGroupIdSet.has(e.groupId)
+    ) {
       expenseMap.set(e.id, e);
     }
   });
@@ -348,10 +307,21 @@ export function reconcileAppState(
 
   // 6. Reconcile Settlements
   const settlementMap = new Map<string, SettlementRecord>();
-  local.settlements.forEach(s => settlementMap.set(s.id, s));
-  cloud.settlements.forEach(s => settlementMap.set(s.id, s));
+  local.settlements.forEach(s => {
+    if (!deletedGroupSet.has(s.groupId) && validGroupIdSet.has(s.groupId)) {
+      settlementMap.set(s.id, s);
+    }
+  });
+  cloud.settlements.forEach(s => {
+    if (!deletedGroupSet.has(s.groupId) && validGroupIdSet.has(s.groupId)) {
+      settlementMap.set(s.id, s);
+    }
+  });
 
-  // Calculate updated pendingExpenseIds
+  // Calculate updated pendingGroupIds and pendingExpenseIds
+  const remainingPendingGroups = Array.from(groupMap.keys()).filter(
+    id => !cloudGroupIdSet.has(id) && pendingGroupSet.has(id)
+  );
   const cloudExpenseIdSet = new Set(cloud.expenses.map(e => e.id));
   const remainingPending = Array.from(expenseMap.keys()).filter(
     id => !cloudExpenseIdSet.has(id)
@@ -365,11 +335,13 @@ export function reconcileAppState(
     expenses: Array.from(expenseMap.values()),
     expenseShares: Array.from(shareMap.values()),
     settlements: Array.from(settlementMap.values()),
+    pendingGroupIds: remainingPendingGroups,
     pendingExpenseIds: remainingPending,
   };
 }
 
 export function resetStorage(): AppState {
+  clearAllLocalLocksAndSessionKeys();
   const clean = getInitialCleanState();
   saveAppState(clean);
   return clean;

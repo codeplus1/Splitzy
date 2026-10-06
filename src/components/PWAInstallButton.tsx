@@ -18,6 +18,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState<boolean>(false);
   const [isIOS, setIsIOS] = useState<boolean>(false);
+  const [showIOSGuide, setShowIOSGuide] = useState<boolean>(false);
 
   useEffect(() => {
     const checkInstalled = () => {
@@ -53,14 +54,18 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   }, []);
 
   const handleInstallClick = async () => {
-    if (!deferredPrompt) return;
-
-    deferredPrompt.prompt();
-    const choice = await deferredPrompt.userChoice;
-    if (choice.outcome === 'accepted') {
-      setIsInstalled(true);
+    if (deferredPrompt) {
+      await deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+      if (choice.outcome === 'accepted') {
+        setIsInstalled(true);
+      }
+      setDeferredPrompt(null);
+      return;
     }
-    setDeferredPrompt(null);
+    if (isIOS) {
+      setShowIOSGuide(true);
+    }
   };
 
   if (variant === 'header') {
@@ -68,15 +73,48 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
     if (!deferredPrompt && !isIOS) return null;
 
     return (
-      <button
-        id="header-pwa-install-btn"
-        onClick={deferredPrompt ? handleInstallClick : undefined}
-        className={`hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-[var(--success-subtle)] text-[var(--success-text)] border border-[var(--success-border)] transition-colors cursor-pointer ${className}`}
-        title={deferredPrompt ? 'Install Splitzy to your desktop or device' : 'Add to Home Screen'}
-      >
-        <Download className="w-3.5 h-3.5" />
-        <span>Install App</span>
-      </button>
+      <>
+        <button
+          id="header-pwa-install-btn"
+          onClick={handleInstallClick}
+          className={`inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-xl bg-[var(--success-subtle)] text-[var(--success-text)] border border-[var(--success-border)] transition-colors cursor-pointer ${className}`}
+          title={deferredPrompt ? 'Install Splitzy to your desktop or device' : 'Add to Home Screen'}
+          aria-label="Install Splitzy App"
+        >
+          <Download className="w-3.5 h-3.5 shrink-0" />
+          <span className="hidden sm:inline">Install App</span>
+        </button>
+
+        {showIOSGuide && (
+          <div
+            className="ui-modal-backdrop"
+            onClick={() => setShowIOSGuide(false)}
+          >
+            <div
+              className="ui-modal-card max-w-sm p-5 space-y-3"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-2">
+                <Share className="w-4 h-4 text-[var(--brand-text)]" />
+                <h3 className="text-sm font-bold text-[var(--text-primary)]">
+                  Install Splitzy on iPhone / iPad
+                </h3>
+              </div>
+              <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                1. Tap the <strong>Share</strong> button in the Safari toolbar.<br />
+                2. Scroll down and tap <strong>Add to Home Screen</strong>.
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowIOSGuide(false)}
+                className="ui-btn ui-btn-primary w-full py-2 text-xs"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        )}
+      </>
     );
   }
 

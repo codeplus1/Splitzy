@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   X,
   Settings,
@@ -14,22 +14,46 @@ import {
   CloudOff,
   ChevronRight,
   Database,
+  User,
+  Pencil,
+  Calendar,
+  Coins,
+  Lock,
+  Unlock,
 } from 'lucide-react';
-import { SupportedLanguage } from '../types';
+import { CalendarType, Member, SupportedLanguage } from '../types';
 import { translate, LANGUAGE_OPTIONS } from '../core/i18n';
+import { SUPPORTED_CURRENCIES } from '../core/currency';
 import { SyncStatus } from '../services/firebase';
 import { PWAInstallButton } from './PWAInstallButton';
+import { MemberAvatar } from './MemberAvatar';
+import {
+  isAppLockEnabled,
+  saveAppLockPin,
+  disableAppLockPin,
+  verifyAppLockPin,
+  AUTO_LOCK_TIMEOUT_OPTIONS,
+  getAppLockTimeoutMs,
+  setAppLockTimeoutMs,
+} from './AppLockScreen';
 
 interface SettingsModalProps {
   isOpen?: boolean;
   onClose: () => void;
   language: SupportedLanguage;
   onLanguageChange: (lang: SupportedLanguage) => void;
+  defaultCurrency?: string;
+  onCurrencyChange?: (currency: string) => void;
+  defaultCalendar?: CalendarType;
+  onCalendarChange?: (calendar: CalendarType) => void;
   onOpenSecurityCenter: () => void;
   onExportData: () => void;
   onImportData: () => void;
   onManualSync?: () => void;
   onOpenTestRunner?: () => void;
+  onEditProfile?: () => void;
+  onLockAppNow?: () => void;
+  currentMember?: Member;
   syncStatus?: SyncStatus;
   userId?: string;
 }
@@ -39,15 +63,73 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   language,
   onLanguageChange,
+  defaultCurrency = 'NPR',
+  onCurrencyChange,
+  defaultCalendar = 'BS',
+  onCalendarChange,
   onOpenSecurityCenter,
   onExportData,
   onImportData,
   onManualSync,
   onOpenTestRunner,
+  onEditProfile,
+  onLockAppNow,
+  currentMember,
   syncStatus = 'connected',
   userId,
 }) => {
+  const [pinEnabled, setPinEnabled] = useState<boolean>(() => isAppLockEnabled());
+  const [autoLockTimeoutMs, setAutoLockTimeoutMsState] = useState<number>(() => getAppLockTimeoutMs());
+  const [pinMode, setPinMode] = useState<'idle' | 'setup' | 'change' | 'disable'>('idle');
+  const [currentPinInput, setCurrentPinInput] = useState('');
+  const [newPinInput, setNewPinInput] = useState('');
+  const [confirmPinInput, setConfirmPinInput] = useState('');
+  const [pinMessage, setPinMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
   if (!isOpen) return null;
+
+  const resetPinForm = () => {
+    setPinMode('idle');
+    setCurrentPinInput('');
+    setNewPinInput('');
+    setConfirmPinInput('');
+  };
+
+  const handleSavePin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPinMessage(null);
+
+    if (pinMode === 'change' || pinMode === 'disable') {
+      const validCurrent = await verifyAppLockPin(currentPinInput);
+      if (!validCurrent) {
+        setPinMessage({ text: 'Current PIN is incorrect.', type: 'error' });
+        return;
+      }
+    }
+
+    if (pinMode === 'disable') {
+      disableAppLockPin();
+      setPinEnabled(false);
+      resetPinForm();
+      setPinMessage({ text: 'App Lock PIN disabled.', type: 'success' });
+      return;
+    }
+
+    if (!/^\d{4}$/.test(newPinInput)) {
+      setPinMessage({ text: 'Please enter a 4-digit numeric PIN.', type: 'error' });
+      return;
+    }
+
+    if (newPinInput !== confirmPinInput) {
+      setPinMessage({ text: 'New PIN and confirmation do not match.', type: 'error' });
+      return;
+    }
+
+    await saveAppLockPin(newPinInput);
+    setPinEnabled(true);
+    resetPinForm();
+    setPinMessage({ text: '4-digit App Lock PIN saved!', type: 'success' });
+  };
 
   return (
     <div
@@ -88,6 +170,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Content Body */}
         <div className="p-5 sm:p-6 space-y-6 max-h-[calc(85vh-120px)] overflow-y-auto">
+          {/* SECTION 0: USER PROFILE & USERNAME */}
+          {currentMember && (
+            <section id="settings-section-profile" className="space-y-3 pb-4 border-b border-[var(--border-subtle)]">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <User className="w-4 h-4 text-[var(--brand-text)]" />
+                  <h3 className="text-xs font-semibold text-[var(--text-secondary)]">
+                    Profile & Unique Username
+                  </h3>
+                </div>
+              </div>
+
+              <div className="p-3.5 rounded-xl bg-[var(--bg-subtle)] border border-[var(--border-default)] flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <MemberAvatar
+                    name={currentMember.name}
+                    avatar={currentMember.avatar}
+                    color={currentMember.color}
+                    size="md"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-[var(--text-primary)] truncate">
+                      {currentMember.name}
+                    </div>
+                    {currentMember.username && (
+                      <div className="text-xs font-mono font-semibold text-[var(--brand-text)] truncate">
+                        @{currentMember.username}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {onEditProfile && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onEditProfile();
+                    }}
+                    className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs shrink-0"
+                  >
+                    <Pencil className="w-3.5 h-3.5 text-[var(--brand-text)]" />
+                    <span>Edit Profile</span>
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
+
           {/* SECTION 1: LANGUAGE SELECTION */}
           <section id="settings-section-language" className="space-y-3">
             <div className="flex items-center justify-between">
@@ -131,15 +262,265 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 );
               })}
             </div>
+
+            {/* CURRENCY & CALENDAR PREFERENCES */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-secondary)]">
+                  <Coins className="w-3.5 h-3.5 text-[var(--brand-text)]" />
+                  <span>{translate(language, 'baseCurrency')}</span>
+                </label>
+                <select
+                  value={defaultCurrency}
+                  onChange={e => onCurrencyChange?.(e.target.value)}
+                  className="ui-input"
+                >
+                  {SUPPORTED_CURRENCIES.map(c => (
+                    <option key={c.code} value={c.code}>
+                      {c.code} ({c.symbol}) — {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-secondary)]">
+                  <Calendar className="w-3.5 h-3.5 text-[var(--brand-text)]" />
+                  <span>{translate(language, 'calendarPref')}</span>
+                </label>
+                <select
+                  value={defaultCalendar}
+                  onChange={e => onCalendarChange?.(e.target.value as CalendarType)}
+                  className="ui-input"
+                >
+                  <option value="BS">{translate(language, 'calendarBS')}</option>
+                  <option value="AD">{translate(language, 'calendarAD')}</option>
+                </select>
+              </div>
+            </div>
           </section>
 
-          {/* SECTION 2: SECURITY & RECOVERY CENTER */}
+          {/* SECTION 2: APP LOCK (PIN UNLOCK) & SECURITY CENTER */}
           <section id="settings-section-security" className="space-y-3 pt-4 border-t border-[var(--border-subtle)]">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-[var(--brand-text)]" />
-              <h3 className="text-xs font-semibold text-[var(--text-secondary)]">
-                Security & Recovery Center
-              </h3>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Lock className="w-4 h-4 text-[var(--brand-text)]" />
+                <h3 className="text-xs font-semibold text-[var(--text-secondary)]">
+                  App Lock (PIN Unlock) & Security
+                </h3>
+              </div>
+              <span
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                  pinEnabled
+                    ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-[var(--bg-subtle)] text-[var(--text-muted)] border border-[var(--border-default)]'
+                }`}
+              >
+                {pinEnabled ? 'PIN Active' : 'Off'}
+              </span>
+            </div>
+
+            {/* App Lock PIN Card */}
+            <div className="p-4 rounded-xl bg-[var(--bg-subtle)] border border-[var(--border-default)] space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-[var(--text-primary)]">
+                      4-Digit PIN App Lock
+                    </span>
+                  </div>
+                  <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                    Require a 4-digit PIN to unlock Splitzy whenever you open the app or lock it manually.
+                  </p>
+                </div>
+
+                {pinEnabled && onLockAppNow && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onLockAppNow();
+                    }}
+                    className="ui-btn ui-btn-secondary py-1.5 px-2.5 text-xs shrink-0"
+                    title="Lock App Immediately"
+                  >
+                    <Lock className="w-3.5 h-3.5 text-[var(--brand-text)]" />
+                    <span>Lock Now</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Auto-Lock Timer Preference */}
+              <div className="pt-2 border-t border-[var(--border-subtle)] flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="space-y-0.5">
+                  <label
+                    htmlFor="auto-lock-timeout-select"
+                    className="text-xs font-semibold text-[var(--text-primary)] block"
+                  >
+                    {language === 'fr' ? 'Délai de verrouillage automatique' : 'Auto-Lock Timer'}
+                  </label>
+                  <p className="text-[11px] text-[var(--text-secondary)]">
+                    {language === 'fr'
+                      ? 'Verrouille automatiquement après inactivité'
+                      : 'Automatically lock Splitzy after inactivity'}
+                  </p>
+                </div>
+
+                <select
+                  id="auto-lock-timeout-select"
+                  value={autoLockTimeoutMs}
+                  onChange={e => {
+                    const nextMs = Number(e.target.value);
+                    setAutoLockTimeoutMsState(nextMs);
+                    setAppLockTimeoutMs(nextMs);
+                    setPinMessage({
+                      text:
+                        nextMs === 0
+                          ? 'Auto-lock timer turned off (manual lock only).'
+                          : `Auto-lock timer updated to ${
+                              AUTO_LOCK_TIMEOUT_OPTIONS.find(o => o.valueMs === nextMs)?.labelEn || ''
+                            }.`,
+                      type: 'success',
+                    });
+                  }}
+                  className="ui-input sm:w-56 text-xs font-semibold"
+                >
+                  {AUTO_LOCK_TIMEOUT_OPTIONS.map(opt => (
+                    <option key={opt.valueMs} value={opt.valueMs}>
+                      {language === 'fr' ? opt.labelFr : opt.labelEn}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {pinMessage && (
+                <div
+                  className={`p-2.5 rounded-lg text-xs font-medium border ${
+                    pinMessage.type === 'success'
+                      ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300'
+                  }`}
+                >
+                  {pinMessage.text}
+                </div>
+              )}
+
+              {pinMode === 'idle' ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  {!pinEnabled ? (
+                    <button
+                      id="enable-pin-lock-btn"
+                      type="button"
+                      onClick={() => {
+                        setPinMessage(null);
+                        setPinMode('setup');
+                      }}
+                      className="ui-btn ui-btn-primary py-2 px-3.5 text-xs"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                      <span>Set 4-Digit PIN</span>
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        id="change-pin-lock-btn"
+                        type="button"
+                        onClick={() => {
+                          setPinMessage(null);
+                          setPinMode('change');
+                        }}
+                        className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs"
+                      >
+                        <KeyRound className="w-3.5 h-3.5 text-[var(--brand-text)]" />
+                        <span>Change PIN</span>
+                      </button>
+                      <button
+                        id="disable-pin-lock-btn"
+                        type="button"
+                        onClick={() => {
+                          setPinMessage(null);
+                          setPinMode('disable');
+                        }}
+                        className="ui-btn ui-btn-danger py-1.5 px-3 text-xs"
+                      >
+                        <Unlock className="w-3.5 h-3.5" />
+                        <span>Remove PIN</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <form onSubmit={handleSavePin} className="space-y-2.5 pt-2 border-t border-[var(--border-subtle)]">
+                  {(pinMode === 'change' || pinMode === 'disable') && (
+                    <div>
+                      <label className="text-[11px] font-semibold text-[var(--text-secondary)] block mb-1">
+                        Current 4-Digit PIN
+                      </label>
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={4}
+                        placeholder="••••"
+                        value={currentPinInput}
+                        onChange={e => setCurrentPinInput(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                        className="ui-input font-mono tracking-widest text-center text-sm"
+                        required
+                      />
+                    </div>
+                  )}
+
+                  {(pinMode === 'setup' || pinMode === 'change') && (
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="text-[11px] font-semibold text-[var(--text-secondary)] block mb-1">
+                          New 4-Digit PIN
+                        </label>
+                        <input
+                          type="password"
+                          inputMode="numeric"
+                          maxLength={4}
+                          placeholder="••••"
+                          value={newPinInput}
+                          onChange={e => setNewPinInput(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                          className="ui-input font-mono tracking-widest text-center text-sm"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] font-semibold text-[var(--text-secondary)] block mb-1">
+                          Confirm PIN
+                        </label>
+                        <input
+                          type="password"
+                          inputMode="numeric"
+                          maxLength={4}
+                          placeholder="••••"
+                          value={confirmPinInput}
+                          onChange={e => setConfirmPinInput(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                          className="ui-input font-mono tracking-widest text-center text-sm"
+                          required
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={resetPinForm}
+                      className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="ui-btn ui-btn-primary py-1.5 px-3.5 text-xs"
+                    >
+                      {pinMode === 'disable' ? 'Confirm Disable' : 'Save PIN'}
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
 
             <div className="p-4 rounded-xl bg-[var(--bg-subtle)] border border-[var(--border-default)] space-y-3">
@@ -271,23 +652,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <span>{translate(language, 'importJSON')}</span>
               </button>
             </div>
-
-            {onOpenTestRunner && (
-              <button
-                id="settings-open-test-runner-btn"
-                onClick={() => {
-                  onClose();
-                  onOpenTestRunner();
-                }}
-                className="w-full flex items-center justify-between p-3 rounded-xl border border-[var(--border-default)] bg-[var(--bg-subtle)] hover:border-[var(--border-strong)] text-[var(--text-primary)] text-xs font-semibold transition-colors cursor-pointer"
-              >
-                <div className="flex items-center gap-2">
-                  <Sparkles className="w-3.5 h-3.5 text-[var(--brand-text)]" />
-                  <span>Run Verification Test Suite (Calculations & Cloud)</span>
-                </div>
-                <ChevronRight className="w-3.5 h-3.5 text-[var(--text-muted)]" />
-              </button>
-            )}
           </section>
         </div>
 

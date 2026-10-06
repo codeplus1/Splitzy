@@ -28,12 +28,17 @@
         "id": { "type": "string" },
         "username": { "type": "string" },
         "uid": { "type": "string" },
+        "groupId": { "type": "string" },
+        "memberUserIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "name": { "type": "string" },
         "avatar": { "type": "string" },
         "color": { "type": "string" },
         "createdAt": { "type": "string" }
       },
-      "required": ["id", "name"]
+      "required": ["id", "uid", "name"]
     },
     "userDirectory": {
       "title": "UserDirectoryEntry",
@@ -91,6 +96,7 @@
       "properties": {
         "id": { "type": "string" },
         "expenseId": { "type": "string" },
+        "groupId": { "type": "string" },
         "memberId": { "type": "string" },
         "shareAmount": { "type": "number" },
         "splitType": { "type": "string" },
@@ -124,7 +130,9 @@
         "groupId": { "type": "string" },
         "groupName": { "type": "string" },
         "createdAt": { "type": "number" },
-        "createdBy": { "type": "string" }
+        "createdBy": { "type": "string" },
+        "lastJoinedBy": { "type": "string" },
+        "lastJoinedAt": { "type": "number" }
       },
       "required": ["groupId", "createdBy"]
     },
