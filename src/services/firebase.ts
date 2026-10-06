@@ -1016,8 +1016,7 @@ export function setActiveAccountUid(uid: string, displayName = 'User'): AppUser 
 /**
  * Registers or updates the current user's profile and unique @username in Firestore
  * (`members` and `userDirectory` collections). Verifies that the username is not already
- * claimed by a different user ID. If already registered, returns `existingAccount` so the
- * user can choose to access their existing account.
+ * claimed by a different user ID.
  */
 export async function cloudRegisterOrUpdateUserProfile(
   member: Member,
@@ -1026,7 +1025,7 @@ export async function cloudRegisterOrUpdateUserProfile(
   success: boolean;
   error?: string;
   member?: Member;
-  existingAccount?: Member;
+  usernameTaken?: boolean;
 }> {
   try {
     const authUser = await ensureAuthUser();
@@ -1058,19 +1057,10 @@ export async function cloudRegisterOrUpdateUserProfile(
     if (existingSnap.exists()) {
       const data = existingSnap.data();
       if (data.memberId !== member.id && data.uid !== effectiveUid) {
-        const existingAccount: Member = {
-          id: data.memberId,
-          username: data.username || cleanUsername,
-          uid: data.uid,
-          name: data.name || member.name,
-          avatar: data.avatar || '👨‍💻',
-          color: data.color || '#101D2D',
-          createdAt: data.updatedAt || new Date().toISOString(),
-        };
         return {
           success: false,
-          existingAccount,
-          error: `Username "@${cleanUsername}" is already registered (${existingAccount.name}). If this is your account, you can access it below, or choose a different @username.`,
+          usernameTaken: true,
+          error: `Username "@${cleanUsername}" is already taken. Please choose a different @username, or verify your 20-character Recovery Code if this is your account.`,
         };
       }
     }
@@ -1107,31 +1097,10 @@ export async function cloudRegisterOrUpdateUserProfile(
       err?.code === 'permission-denied' ||
       errMsg.toLowerCase().includes('missing or insufficient permissions')
     ) {
-      try {
-        const snap = await getDoc(doc(db, USER_DIRECTORY_COL, cleanUsername));
-        if (snap.exists()) {
-          const d = snap.data();
-          const existingAccount: Member = {
-            id: d.memberId,
-            username: d.username || cleanUsername,
-            uid: d.uid,
-            name: d.name || member.name,
-            avatar: d.avatar || '👨‍💻',
-            color: d.color || '#101D2D',
-            createdAt: d.updatedAt || new Date().toISOString(),
-          };
-          return {
-            success: false,
-            existingAccount,
-            error: `Username "@${cleanUsername}" is already registered (${existingAccount.name}). If this is your account, you can access it below, or choose a different @username.`,
-          };
-        }
-      } catch {
-        // Ignore fallback lookup error
-      }
       return {
         success: false,
-        error: `Username "@${cleanUsername}" is already claimed by another user. Please choose a different unique @username.`,
+        usernameTaken: true,
+        error: `Username "@${cleanUsername}" is already taken. Please choose a different @username, or verify your 20-character Recovery Code if this is your account.`,
       };
     }
     return {
@@ -1142,11 +1111,13 @@ export async function cloudRegisterOrUpdateUserProfile(
 }
 
 /**
- * Accesses an existing registered @username account and links the current device session
- * so the user can immediately access their existing profile and groups.
+ * Restores an existing registered @username account ONLY after verifying the owner's
+ * cryptographic 20-character Recovery Code (SHA-256 verifier hash).
+ * Prevents any unauthorized user from accessing someone else's account by username alone.
  */
-export async function cloudAccessExistingUsernameAccount(
-  rawUsername: string
+export async function cloudVerifyAndAccessExistingAccount(
+  rawUsername: string,
+  verifierHash: string
 ): Promise<{
   success: boolean;
   member?: Member;
@@ -1160,11 +1131,26 @@ export async function cloudAccessExistingUsernameAccount(
       error: 'Please enter a valid @username.',
     };
   }
+  if (!verifierHash || verifierHash.length !== 64) {
+    return {
+      success: false,
+      error: 'A valid 20-character Recovery Code is required to verify account ownership.',
+    };
+  }
 
   try {
-    const authUser = await ensureAuthUser();
-    const currentAuthUid = authUser?.uid || auth.currentUser?.uid;
+    await ensureAuthUser();
 
+    // 1. Verify the cryptographic recovery hash in Firestore
+    const recoveryRes = await cloudLookupRecoveryVerifier(verifierHash);
+    if (!recoveryRes.success || !recoveryRes.uid) {
+      return {
+        success: false,
+        error: 'Invalid Recovery Code. Ownership of this account could not be verified.',
+      };
+    }
+
+    // 2. Verify that the @username directory entry belongs to the same UID as the recovery record
     const dirRef = doc(db, USER_DIRECTORY_COL, cleanUsername);
     const dirSnap = await getDoc(dirRef);
     if (!dirSnap.exists()) {
@@ -1175,7 +1161,14 @@ export async function cloudAccessExistingUsernameAccount(
     }
 
     const d = dirSnap.data();
-    const accountUid: string = d.uid || currentAuthUid || `u_${cleanUsername}`;
+    if (d.uid && d.uid !== recoveryRes.uid) {
+      return {
+        success: false,
+        error: `This Recovery Code does not match the owner of "@${cleanUsername}".`,
+      };
+    }
+
+    const accountUid: string = d.uid || recoveryRes.uid;
     const memberId: string = d.memberId || `m_owner_${cleanUsername}`;
 
     let restoredMember: Member = {
@@ -1201,23 +1194,20 @@ export async function cloudAccessExistingUsernameAccount(
         };
       }
     } catch {
-      // Directory profile metadata is sufficient if /members/{id} is scoped to a different UID
+      // Directory profile metadata is used if /members/{id} is restricted
     }
 
-    const appUser = setActiveAccountUid(
-      accountUid,
-      restoredMember.name
-    );
+    const appUser = setActiveAccountUid(accountUid, restoredMember.name);
 
     return {
       success: true,
       member: restoredMember,
       appUser,
     };
-  } catch (err: any) {
+  } catch {
     return {
       success: false,
-      error: err instanceof Error ? err.message : 'Could not access existing account.',
+      error: 'Invalid Recovery Code or unauthorized account access attempt.',
     };
   }
 }

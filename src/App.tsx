@@ -31,7 +31,6 @@ import {
   generateInviteCode,
   generateGuaranteedUniqueInviteCode,
   cloudRegisterOrUpdateUserProfile,
-  cloudAccessExistingUsernameAccount,
   generateDefaultUsername,
   normalizeUsername,
   AppUser,
@@ -538,7 +537,7 @@ export default function App() {
     username: string,
     avatar: string,
     color: string
-  ): Promise<{ success: boolean; error?: string; existingAccount?: Member }> => {
+  ): Promise<{ success: boolean; error?: string; usernameTaken?: boolean }> => {
     const existingMember =
       appState.members.find(m => m.id === appState.currentUserId) ||
       appState.userProfile;
@@ -567,7 +566,7 @@ export default function App() {
       return {
         success: false,
         error: regResult.error,
-        existingAccount: regResult.existingAccount,
+        usernameTaken: regResult.usernameTaken,
       };
     }
 
@@ -635,46 +634,6 @@ export default function App() {
 
     setIsEditProfileOpen(false);
     showToast(`Profile saved as @${updatedMember.username}!`, 'success');
-    return { success: true };
-  };
-
-  // Access an existing @username account when username already exists
-  const handleAccessExistingAccount = async (
-    username: string,
-    existingAccount?: Member
-  ): Promise<{ success: boolean; error?: string }> => {
-    const res = await cloudAccessExistingUsernameAccount(username);
-    const restoredMember = res.member || existingAccount;
-    if (!res.success || !restoredMember) {
-      return {
-        success: false,
-        error: res.error || 'Could not access existing account.',
-      };
-    }
-
-    if (res.appUser) {
-      setCurrentUser(res.appUser);
-    }
-
-    setAppState(prev => {
-      const existsInMembers = prev.members.some(m => m.id === restoredMember.id);
-      const updatedMembers = existsInMembers
-        ? prev.members.map(m => (m.id === restoredMember.id ? restoredMember : m))
-        : [restoredMember, ...prev.members];
-
-      return {
-        ...prev,
-        userProfile: restoredMember,
-        currentUserId: restoredMember.id,
-        members: updatedMembers,
-      };
-    });
-
-    setIsEditProfileOpen(false);
-    showToast(
-      `Welcome back, ${restoredMember.name} (@${restoredMember.username})!`,
-      'success'
-    );
     return { success: true };
   };
 
@@ -1192,7 +1151,7 @@ export default function App() {
 
       {/* First-Time User Name Onboarding / Edit Profile Modal */}
       <UserOnboardingModal
-        isOpen={needsOnboarding || isEditProfileOpen}
+        isOpen={(needsOnboarding || isEditProfileOpen) && !isSecurityCenterOpen}
         initialName={currentUserMember?.name || ''}
         initialUsername={
           currentUserMember?.username ||
@@ -1204,7 +1163,7 @@ export default function App() {
         initialColor={currentUserMember?.color || '#101D2D'}
         isEditing={!needsOnboarding && isEditProfileOpen}
         onSaveUser={handleSaveUserProfile}
-        onAccessExistingAccount={handleAccessExistingAccount}
+        onOpenRecoveryCenter={() => setIsSecurityCenterOpen(true)}
         onClose={() => setIsEditProfileOpen(false)}
         language={appState.language}
       />

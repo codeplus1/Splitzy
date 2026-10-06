@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
-import { Sparkles, ArrowRight, User, Upload, Trash2, Camera, AtSign, KeyRound } from 'lucide-react';
-import { Member, SupportedLanguage } from '../types';
+import { Sparkles, ArrowRight, User, Upload, Trash2, Camera, AtSign, ShieldCheck } from 'lucide-react';
+import { SupportedLanguage } from '../types';
 import { MemberAvatar } from './MemberAvatar';
 import { SplitzeLogo } from './SplitzeLogo';
 import { processAvatarImage } from '../core/receipt';
@@ -18,8 +18,8 @@ interface UserOnboardingModalProps {
     username: string,
     avatar: string,
     color: string
-  ) => Promise<{ success: boolean; error?: string; existingAccount?: Member }> | void;
-  onAccessExistingAccount?: (username: string, existingAccount?: Member) => Promise<{ success: boolean; error?: string }>;
+  ) => Promise<{ success: boolean; error?: string; usernameTaken?: boolean }> | void;
+  onOpenRecoveryCenter?: () => void;
   onClose?: () => void;
   language: SupportedLanguage;
 }
@@ -35,7 +35,7 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   initialColor = '#101D2D',
   isEditing = false,
   onSaveUser,
-  onAccessExistingAccount,
+  onOpenRecoveryCenter,
   onClose,
   language,
 }) => {
@@ -45,10 +45,9 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   const [avatar, setAvatar] = useState(initialAvatar);
   const [color, setColor] = useState(initialColor);
   const [error, setError] = useState<string | null>(null);
-  const [existingAccount, setExistingAccount] = useState<Member | null>(null);
+  const [isUsernameTaken, setIsUsernameTaken] = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [isAccessingExisting, setIsAccessingExisting] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
   React.useEffect(() => {
@@ -59,9 +58,8 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
       setAvatar(initialAvatar);
       setColor(initialColor);
       setError(null);
-      setExistingAccount(null);
+      setIsUsernameTaken(false);
       setIsSaving(false);
-      setIsAccessingExisting(false);
     }
   }, [isOpen, initialName, initialUsername, initialAvatar, initialColor]);
 
@@ -88,7 +86,7 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isSaving || isAccessingExisting) return;
+    if (isSaving) return;
 
     const trimmed = name.trim();
     if (!trimmed) {
@@ -112,12 +110,12 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
 
     setIsSaving(true);
     setError(null);
-    setExistingAccount(null);
+    setIsUsernameTaken(false);
     try {
       const result = await onSaveUser(trimmed, cleanUser, avatar, color);
       if (result && !result.success) {
-        if (result.existingAccount) {
-          setExistingAccount(result.existingAccount);
+        if (result.usernameTaken) {
+          setIsUsernameTaken(true);
         }
         if (result.error) {
           setError(result.error);
@@ -125,31 +123,6 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
       }
     } finally {
       setIsSaving(false);
-    }
-  };
-
-  const handleAccessOldAccount = async () => {
-    if (!onAccessExistingAccount || isAccessingExisting) return;
-    const targetUsername =
-      existingAccount?.username || normalizeUsername(username || name);
-    if (!targetUsername || targetUsername.length < 2) {
-      setError(
-        isFrench
-          ? 'Veuillez entrer votre @username existant.'
-          : 'Please enter your existing @username first.'
-      );
-      return;
-    }
-
-    setIsAccessingExisting(true);
-    setError(null);
-    try {
-      const res = await onAccessExistingAccount(targetUsername, existingAccount || undefined);
-      if (!res.success && res.error) {
-        setError(res.error);
-      }
-    } finally {
-      setIsAccessingExisting(false);
     }
   };
 
@@ -202,45 +175,21 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
           </p>
 
           {error && (
-            <div className="p-3 rounded-xl bg-[var(--danger-subtle)] border border-[var(--danger-border)] text-[var(--danger-text)] text-xs font-medium space-y-2.5">
+            <div className="p-2.5 rounded-lg bg-[var(--danger-subtle)] border border-[var(--danger-border)] text-[var(--danger-text)] text-xs font-medium space-y-2">
               <p>{error}</p>
-              {existingAccount && onAccessExistingAccount && (
-                <div className="p-2.5 rounded-lg bg-[var(--surface)] border border-[var(--border)] flex items-center justify-between gap-2.5 text-[var(--ink)]">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <MemberAvatar
-                      name={existingAccount.name}
-                      avatar={existingAccount.avatar}
-                      color={existingAccount.color}
-                      size="sm"
-                    />
-                    <div className="min-w-0">
-                      <p className="text-xs font-bold text-[var(--ink)] truncate">
-                        {existingAccount.name}
-                      </p>
-                      <p className="text-[11px] font-mono text-[var(--ink-secondary)] truncate">
-                        @{existingAccount.username}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    id="onboarding-access-existing-account-btn"
-                    type="button"
-                    onClick={handleAccessOldAccount}
-                    disabled={isAccessingExisting}
-                    className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#101D2D] text-[#63E6BE] hover:bg-[#152436] text-xs font-bold transition-all cursor-pointer shadow-2xs"
-                  >
-                    <KeyRound className="w-3.5 h-3.5" />
-                    <span>
-                      {isAccessingExisting
-                        ? isFrench
-                          ? 'Connexion...'
-                          : 'Accessing...'
-                        : isFrench
-                        ? 'Accéder à mon compte'
-                        : 'Access Old Account'}
-                    </span>
-                  </button>
-                </div>
+              {isUsernameTaken && onOpenRecoveryCenter && (
+                <button
+                  type="button"
+                  onClick={onOpenRecoveryCenter}
+                  className="inline-flex items-center gap-1.5 text-[11px] font-bold text-[#101D2D] dark:text-[#63E6BE] underline underline-offset-2 hover:opacity-80 cursor-pointer"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>
+                    {isFrench
+                      ? 'Restaurer avec un code de récupération ou une sauvegarde chiffrée'
+                      : 'Restore account with Recovery Code or Encrypted Backup'}
+                  </span>
+                </button>
               )}
             </div>
           )}
@@ -372,7 +321,7 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                     setHasEditedUsernameManually(true);
                     setUsername(normalizeUsername(e.target.value));
                     if (error) setError(null);
-                    if (existingAccount) setExistingAccount(null);
+                    if (isUsernameTaken) setIsUsernameTaken(false);
                   }}
                   className="w-full px-2.5 py-1.5 bg-transparent text-xs font-mono text-[var(--ink)] focus:outline-none"
                 />
