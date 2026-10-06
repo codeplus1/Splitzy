@@ -228,36 +228,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <span>{language === 'fr' ? 'Modifier' : 'Edit Profile'}</span>
                     </button>
                   )}
-
-                  {onLogoutAccount && (
-                    <button
-                      id="settings-profile-logout-btn"
-                      type="button"
-                      disabled={isLoggingOut}
-                      onClick={async () => {
-                        setIsLoggingOut(true);
-                        try {
-                          await onLogoutAccount();
-                          onClose();
-                        } finally {
-                          setIsLoggingOut(false);
-                        }
-                      }}
-                      className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs shrink-0 text-[var(--ink-secondary)] hover:text-rose-600 dark:hover:text-rose-400"
-                      title={language === 'fr' ? 'Se déconnecter' : 'Log Out'}
-                    >
-                      <LogOut className="w-3.5 h-3.5" />
-                      <span>
-                        {isLoggingOut
-                          ? language === 'fr'
-                            ? 'Déconnexion...'
-                            : 'Logging out...'
-                          : language === 'fr'
-                          ? 'Déconnexion'
-                          : 'Log Out'}
-                      </span>
-                    </button>
-                  )}
                 </div>
               </div>
             </section>
