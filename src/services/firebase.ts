@@ -1213,6 +1213,164 @@ export async function cloudVerifyAndAccessExistingAccount(
 }
 
 /**
+ * Signs out the current user session on this device without deleting any cloud records.
+ * Allows the user to log out and either create a new profile or restore an account via Recovery Code / Backup.
+ */
+export async function cloudLogoutUserSession(): Promise<{ success: boolean; newUser: AppUser }> {
+  try {
+    if (auth.currentUser) {
+      await auth.signOut();
+    }
+  } catch (err) {
+    console.warn('Sign out notice:', err);
+  }
+
+  try {
+    localStorage.removeItem(AUTHORITATIVE_AUTH_UID_KEY);
+    localStorage.removeItem(LOCAL_USER_KEY);
+  } catch {
+    // Ignore storage issues
+  }
+
+  try {
+    const cred = await signInAnonymously(auth);
+    if (cred?.user) {
+      const appUser: AppUser = {
+        uid: cred.user.uid,
+        isAnonymous: true,
+        displayName: 'User',
+      };
+      try {
+        localStorage.setItem(AUTHORITATIVE_AUTH_UID_KEY, appUser.uid);
+        localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(appUser));
+      } catch {
+        // Ignore
+      }
+      return { success: true, newUser: appUser };
+    }
+  } catch {
+    // Fallback to fresh local identity
+  }
+
+  return { success: true, newUser: getCachedUserIdentity() };
+}
+
+/**
+ * Permanently deletes the current user's account, including:
+ * - Their `@username` reservation in `/userDirectory/{username}` (freeing the handle)
+ * - Their member profile in `/members/{memberId}`
+ * - Their own `/groupMembers/{id}` records
+ * - Their `/securityProfiles/{uid}` and `/recovery/{verifierHash}` records
+ * - Groups owned solely by this user (and their child records)
+ * - Resets the Firebase anonymous authentication session
+ */
+export async function cloudDeleteUserAccount(params: {
+  member?: Member;
+  uid?: string;
+  verifierHash?: string | null;
+  ownedGroupsToDelete?: Array<{
+    group: Group;
+    expenses: Expense[];
+    shares: ExpenseShare[];
+    settlements: SettlementRecord[];
+    groupMembers: GroupMember[];
+  }>;
+  ownGroupMembershipsToRemove?: GroupMember[];
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const authUser = await ensureAuthUser();
+    const effectiveUid =
+      authUser?.uid ||
+      auth.currentUser?.uid ||
+      params.uid ||
+      params.member?.uid ||
+      getCachedUserIdentity().uid;
+
+    // 1. Delete owned groups and their child documents first
+    if (params.ownedGroupsToDelete && params.ownedGroupsToDelete.length > 0) {
+      for (const item of params.ownedGroupsToDelete) {
+        await cloudDeleteGroup(
+          item.group.id,
+          item.expenses,
+          item.shares,
+          item.settlements,
+          item.groupMembers,
+          item.group.inviteCode
+        );
+      }
+    }
+
+    // 2. Delete user's own GroupMember records in any other groups
+    if (params.ownGroupMembershipsToRemove && params.ownGroupMembershipsToRemove.length > 0) {
+      await Promise.allSettled(
+        params.ownGroupMembershipsToRemove.map(gm =>
+          deleteDoc(doc(db, GROUP_MEMBERS_COL, gm.id))
+        )
+      );
+    }
+
+    // 3. Delete @username reservation in /userDirectory/{username} BEFORE deleting /members/{memberId}
+    // (because /userDirectory delete rule checks isMemberOwner(existing().memberId))
+    if (params.member?.username) {
+      const cleanUsername = normalizeUsername(params.member.username);
+      if (cleanUsername) {
+        try {
+          await deleteDoc(doc(db, USER_DIRECTORY_COL, cleanUsername));
+        } catch (err) {
+          console.warn('Could not delete userDirectory entry:', err);
+        }
+      }
+    }
+
+    // 4. Delete member profile in /members/{memberId}
+    if (params.member?.id) {
+      try {
+        await deleteDoc(doc(db, MEMBERS_COL, params.member.id));
+      } catch (err) {
+        console.warn('Could not delete member profile:', err);
+      }
+    }
+
+    // 5. Delete recovery record and security profile
+    if (params.verifierHash && params.verifierHash.length === 64) {
+      try {
+        await deleteDoc(doc(db, RECOVERY_COL, params.verifierHash));
+      } catch {
+        // Ignore if not present
+      }
+    }
+    if (effectiveUid) {
+      try {
+        await deleteDoc(doc(db, SECURITY_PROFILES_COL, effectiveUid));
+      } catch {
+        // Ignore if not present
+      }
+    }
+
+    // 6. Delete or sign out of the Firebase Auth anonymous user so a fresh UID is provisioned next time
+    if (auth.currentUser) {
+      try {
+        await auth.currentUser.delete();
+      } catch {
+        try {
+          await auth.signOut();
+        } catch {
+          // Ignore
+        }
+      }
+    }
+
+    return { success: true };
+  } catch (err) {
+    console.warn('Account deletion warning:', err);
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
  * Verifies whether a user exists in the Splitzy app database by their unique @username or Member ID.
  * Uses the O(1) `/userDirectory/{username}` index without exposing private member collections.
  */

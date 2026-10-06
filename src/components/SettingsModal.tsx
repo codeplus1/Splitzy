@@ -20,6 +20,9 @@ import {
   Coins,
   Lock,
   Unlock,
+  Trash2,
+  AlertTriangle,
+  LogOut,
 } from 'lucide-react';
 import { CalendarType, Member, SupportedLanguage } from '../types';
 import { translate, LANGUAGE_OPTIONS } from '../core/i18n';
@@ -53,6 +56,8 @@ interface SettingsModalProps {
   onOpenTestRunner?: () => void;
   onEditProfile?: () => void;
   onLockAppNow?: () => void;
+  onLogoutAccount?: () => Promise<void> | void;
+  onDeleteAccount?: () => Promise<void> | void;
   currentMember?: Member;
   syncStatus?: SyncStatus;
   userId?: string;
@@ -74,6 +79,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onOpenTestRunner,
   onEditProfile,
   onLockAppNow,
+  onLogoutAccount,
+  onDeleteAccount,
   currentMember,
   syncStatus = 'connected',
   userId,
@@ -85,6 +92,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [newPinInput, setNewPinInput] = useState('');
   const [confirmPinInput, setConfirmPinInput] = useState('');
   const [pinMessage, setPinMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+  const [isConfirmingLogout, setIsConfirmingLogout] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isConfirmingDeleteAccount, setIsConfirmingDeleteAccount] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   if (!isOpen) return null;
 
@@ -202,20 +214,82 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 </div>
 
-                {onEditProfile && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onClose();
-                      onEditProfile();
-                    }}
-                    className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs shrink-0"
-                  >
-                    <Pencil className="w-3.5 h-3.5 text-[var(--brand-text)]" />
-                    <span>Edit Profile</span>
-                  </button>
-                )}
+                <div className="flex items-center gap-2 shrink-0">
+                  {onEditProfile && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onEditProfile();
+                      }}
+                      className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs shrink-0"
+                    >
+                      <Pencil className="w-3.5 h-3.5 text-[var(--brand-text)]" />
+                      <span>{language === 'fr' ? 'Modifier' : 'Edit Profile'}</span>
+                    </button>
+                  )}
+
+                  {onLogoutAccount && !isConfirmingLogout && (
+                    <button
+                      id="settings-profile-logout-btn"
+                      type="button"
+                      onClick={() => setIsConfirmingLogout(true)}
+                      className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs shrink-0 text-[var(--ink-secondary)] hover:text-rose-600 dark:hover:text-rose-400"
+                      title={language === 'fr' ? 'Se déconnecter' : 'Log Out'}
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>{language === 'fr' ? 'Déconnexion' : 'Log Out'}</span>
+                    </button>
+                  )}
+                </div>
               </div>
+
+              {onLogoutAccount && isConfirmingLogout && (
+                <div className="p-3 rounded-xl bg-[var(--surface)] border border-[var(--border-strong)] space-y-2.5">
+                  <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                    {language === 'fr'
+                      ? 'Se déconnecter de cet appareil ? Vos groupes et votre @username restent sauvegardés dans le cloud (pensez à conserver votre code de récupération ou une sauvegarde).'
+                      : 'Log out of your account on this device? Your cloud profile and groups remain safely stored (make sure you have saved your Recovery Code or Backup to sign back in later).'}
+                  </p>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={isLoggingOut}
+                      onClick={() => setIsConfirmingLogout(false)}
+                      className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs"
+                    >
+                      {language === 'fr' ? 'Annuler' : 'Cancel'}
+                    </button>
+                    <button
+                      id="settings-confirm-logout-btn"
+                      type="button"
+                      disabled={isLoggingOut}
+                      onClick={async () => {
+                        setIsLoggingOut(true);
+                        try {
+                          await onLogoutAccount();
+                          setIsConfirmingLogout(false);
+                          onClose();
+                        } finally {
+                          setIsLoggingOut(false);
+                        }
+                      }}
+                      className="ui-btn ui-btn-primary py-1.5 px-3.5 text-xs"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>
+                        {isLoggingOut
+                          ? language === 'fr'
+                            ? 'Déconnexion...'
+                            : 'Logging out...'
+                          : language === 'fr'
+                          ? 'Confirmer la déconnexion'
+                          : 'Log Out'}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </section>
           )}
 
@@ -653,6 +727,121 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </button>
             </div>
           </section>
+
+          {/* SECTION 6: DANGER ZONE — DELETE ACCOUNT */}
+          {onDeleteAccount && (
+            <section
+              id="settings-section-delete-account"
+              className="space-y-3 pt-4 border-t border-[var(--border-subtle)]"
+            >
+              <div className="flex items-center gap-2">
+                <Trash2 className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                <h3 className="text-xs font-semibold text-rose-600 dark:text-rose-400">
+                  {language === 'fr' ? 'Zone de danger · Supprimer le compte' : 'Danger Zone · Delete Account'}
+                </h3>
+              </div>
+
+              <div className="p-4 rounded-xl bg-rose-50/60 dark:bg-rose-950/25 border border-rose-200 dark:border-rose-900/60 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <p className="text-xs font-bold text-rose-800 dark:text-rose-200">
+                      {language === 'fr'
+                        ? 'Supprimer définitivement mon compte'
+                        : 'Permanently Delete My Account'}
+                    </p>
+                    <p className="text-xs text-rose-700/90 dark:text-rose-300/80 leading-relaxed">
+                      {language === 'fr'
+                        ? `Supprime votre profil${currentMember?.username ? ` (@${currentMember.username})` : ''}, libère votre identifiant @username, supprime vos données locales et réinitialise l'application.`
+                        : `Deletes your profile${currentMember?.username ? ` (@${currentMember.username})` : ''}, releases your unique @username so it can be used again, removes your cloud profile & recovery data, and resets this device.`}
+                    </p>
+                  </div>
+                </div>
+
+                {!isConfirmingDeleteAccount ? (
+                  <button
+                    id="settings-delete-account-btn"
+                    type="button"
+                    onClick={() => {
+                      setIsConfirmingDeleteAccount(true);
+                      setDeleteConfirmText('');
+                    }}
+                    className="ui-btn ui-btn-danger py-2 px-3.5 text-xs"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>
+                      {language === 'fr' ? 'Supprimer le compte' : 'Delete Account'}
+                    </span>
+                  </button>
+                ) : (
+                  <div className="p-3 rounded-lg bg-[var(--surface)] border border-rose-300 dark:border-rose-800 space-y-3">
+                    <div className="flex items-start gap-2 text-xs text-rose-700 dark:text-rose-300">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
+                      <p className="leading-snug font-medium">
+                        {language === 'fr'
+                          ? 'Cette action est irréversible. Tapez DELETE ci-dessous pour confirmer la suppression de votre compte :'
+                          : 'This action cannot be undone. Type DELETE below to confirm permanent account deletion:'}
+                      </p>
+                    </div>
+
+                    <input
+                      id="settings-delete-account-confirm-input"
+                      type="text"
+                      value={deleteConfirmText}
+                      onChange={e => setDeleteConfirmText(e.target.value)}
+                      placeholder="Type DELETE to confirm"
+                      className="ui-input text-xs font-mono uppercase"
+                      autoFocus
+                    />
+
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        disabled={isDeletingAccount}
+                        onClick={() => {
+                          setIsConfirmingDeleteAccount(false);
+                          setDeleteConfirmText('');
+                        }}
+                        className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs"
+                      >
+                        {language === 'fr' ? 'Annuler' : 'Cancel'}
+                      </button>
+                      <button
+                        id="settings-confirm-delete-account-btn"
+                        type="button"
+                        disabled={
+                          isDeletingAccount ||
+                          deleteConfirmText.trim().toUpperCase() !== 'DELETE'
+                        }
+                        onClick={async () => {
+                          setIsDeletingAccount(true);
+                          try {
+                            await onDeleteAccount();
+                            setIsConfirmingDeleteAccount(false);
+                            setDeleteConfirmText('');
+                            onClose();
+                          } finally {
+                            setIsDeletingAccount(false);
+                          }
+                        }}
+                        className="ui-btn ui-btn-danger py-1.5 px-3.5 text-xs disabled:opacity-50"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>
+                          {isDeletingAccount
+                            ? language === 'fr'
+                              ? 'Suppression...'
+                              : 'Deleting...'
+                            : language === 'fr'
+                            ? 'Confirmer la suppression'
+                            : 'Permanently Delete Account'}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
         </div>
 
         {/* Footer */}

@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Sparkles, ArrowRight, User, Upload, Trash2, Camera, AtSign, ShieldCheck } from 'lucide-react';
+import { Sparkles, ArrowRight, User, Upload, Trash2, Camera, AtSign, ShieldCheck, LogOut } from 'lucide-react';
 import { SupportedLanguage } from '../types';
 import { MemberAvatar } from './MemberAvatar';
 import { SplitzeLogo } from './SplitzeLogo';
@@ -20,12 +20,11 @@ interface UserOnboardingModalProps {
     color: string
   ) => Promise<{ success: boolean; error?: string; usernameTaken?: boolean }> | void;
   onOpenRecoveryCenter?: () => void;
+  onLogoutAccount?: () => Promise<void> | void;
+  onDeleteAccount?: () => Promise<void> | void;
   onClose?: () => void;
   language: SupportedLanguage;
 }
-
-const AVATAR_OPTIONS = ['👨‍💻', '👩‍💻', '🧗', '👩‍🎨', '📸', '🎒', '✈️', '🎸', '🍜', '☕', '🏕️', '🌟'];
-const COLOR_OPTIONS = ['#101D2D', '#0CA678', '#2563eb', '#d97706', '#7c3aed', '#dc2626', '#0891b2'];
 
 export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   isOpen,
@@ -36,6 +35,8 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   isEditing = false,
   onSaveUser,
   onOpenRecoveryCenter,
+  onLogoutAccount,
+  onDeleteAccount,
   onClose,
   language,
 }) => {
@@ -43,11 +44,15 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   const [username, setUsername] = useState(initialUsername);
   const [hasEditedUsernameManually, setHasEditedUsernameManually] = useState(Boolean(initialUsername));
   const [avatar, setAvatar] = useState(initialAvatar);
-  const [color, setColor] = useState(initialColor);
+  const [color] = useState(initialColor);
   const [error, setError] = useState<string | null>(null);
   const [isUsernameTaken, setIsUsernameTaken] = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
   React.useEffect(() => {
@@ -56,10 +61,13 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
       setUsername(initialUsername);
       setHasEditedUsernameManually(Boolean(initialUsername));
       setAvatar(initialAvatar);
-      setColor(initialColor);
       setError(null);
       setIsUsernameTaken(false);
       setIsSaving(false);
+      setShowLogoutConfirm(false);
+      setIsLoggingOut(false);
+      setShowDeleteConfirm(false);
+      setIsDeleting(false);
     }
   }, [isOpen, initialName, initialUsername, initialAvatar, initialColor]);
 
@@ -224,8 +232,8 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                       ? 'Photo personnalisée active'
                       : 'Custom photo uploaded'
                     : isFrench
-                    ? 'Téléchargez une photo ou choisissez un emoji'
-                    : 'Upload a photo or pick an emoji below'}
+                    ? 'Téléchargez une photo de profil (optionnel)'
+                    : 'Upload a profile picture (optional)'}
                 </span>
               </div>
             </div>
@@ -334,49 +342,131 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
               : 'Others can only add you to a group using your verified unique @username or via group invite.'}
           </p>
 
-          {/* Choose Emoji Avatar */}
-          <div className="space-y-1.5">
-            <label className="ui-label mb-0">
-              {isFrench ? 'Ou choisir un emoji' : 'Or Choose an Emoji Avatar'}
-            </label>
-            <div className="grid grid-cols-6 gap-1.5">
-              {AVATAR_OPTIONS.map(emoji => (
-                <button
-                  key={emoji}
-                  type="button"
-                  onClick={() => setAvatar(emoji)}
-                  className={`h-8 rounded-lg text-base flex items-center justify-center border transition-all cursor-pointer active:scale-95 ${
-                    avatar === emoji
-                      ? 'bg-[var(--brand-subtle)] border-[var(--brand-border)] scale-105 shadow-2xs'
-                      : 'bg-[var(--bg-subtle)] border-[var(--border-default)] hover:border-[var(--border-strong)]'
-                  }`}
-                >
-                  {emoji}
-                </button>
-              ))}
-            </div>
-          </div>
+          {isEditing && (onLogoutAccount || onDeleteAccount) && (
+            <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2.5">
+              {!showLogoutConfirm && !showDeleteConfirm && (
+                <div className="flex items-center justify-between gap-3">
+                  {onLogoutAccount && (
+                    <button
+                      id="profile-modal-logout-account-btn"
+                      type="button"
+                      onClick={() => setShowLogoutConfirm(true)}
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--ink-secondary)] hover:text-[var(--ink)] hover:underline cursor-pointer"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>
+                        {isFrench ? 'Se déconnecter' : 'Log Out'}
+                      </span>
+                    </button>
+                  )}
 
-          {/* Choose Badge Color */}
-          <div className="space-y-1.5">
-            <label className="ui-label mb-0">
-              {isFrench ? 'Couleur du profil' : 'Profile Color'}
-            </label>
-            <div className="flex items-center gap-2">
-              {COLOR_OPTIONS.map(c => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setColor(c)}
-                  className={`w-6 h-6 rounded-full transition-transform cursor-pointer active:scale-90 ${
-                    color === c ? 'scale-110 ring-2 ring-offset-2 ring-[var(--brand-primary)]' : 'opacity-75 hover:opacity-100'
-                  }`}
-                  style={{ backgroundColor: c }}
-                  aria-label={`Select color ${c}`}
-                />
-              ))}
+                  {onDeleteAccount && (
+                    <button
+                      id="profile-modal-delete-account-btn"
+                      type="button"
+                      onClick={() => setShowDeleteConfirm(true)}
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer ml-auto"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>
+                        {isFrench ? 'Supprimer mon compte' : 'Delete My Account'}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {showLogoutConfirm && onLogoutAccount && (
+                <div className="p-3 rounded-xl bg-[var(--surface-subtle)] border border-[var(--border-strong)] space-y-2.5">
+                  <p className="text-xs font-medium text-[var(--ink)] leading-snug">
+                    {isFrench
+                      ? 'Se déconnecter de cet appareil ? Votre compte cloud est conservé.'
+                      : 'Log out of your account on this device? Your cloud account and @username remain saved.'}
+                  </p>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={isLoggingOut}
+                      onClick={() => setShowLogoutConfirm(false)}
+                      className="ui-btn ui-btn-secondary py-1 px-2.5 text-xs"
+                    >
+                      {isFrench ? 'Annuler' : 'Cancel'}
+                    </button>
+                    <button
+                      id="profile-modal-confirm-logout-account-btn"
+                      type="button"
+                      disabled={isLoggingOut}
+                      onClick={async () => {
+                        setIsLoggingOut(true);
+                        try {
+                          await onLogoutAccount();
+                        } finally {
+                          setIsLoggingOut(false);
+                        }
+                      }}
+                      className="ui-btn ui-btn-primary py-1 px-3 text-xs"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>
+                        {isLoggingOut
+                          ? isFrench
+                            ? 'Déconnexion...'
+                            : 'Logging out...'
+                          : isFrench
+                          ? 'Oui, me déconnecter'
+                          : 'Yes, Log Out'}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {showDeleteConfirm && onDeleteAccount && (
+                <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800 space-y-2.5">
+                  <p className="text-xs font-medium text-rose-700 dark:text-rose-300 leading-snug">
+                    {isFrench
+                      ? 'Supprimer définitivement votre compte et libérer votre @username ?'
+                      : 'Permanently delete your account and release your @username?'}
+                  </p>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={isDeleting}
+                      onClick={() => setShowDeleteConfirm(false)}
+                      className="ui-btn ui-btn-secondary py-1 px-2.5 text-xs"
+                    >
+                      {isFrench ? 'Annuler' : 'Cancel'}
+                    </button>
+                    <button
+                      id="profile-modal-confirm-delete-account-btn"
+                      type="button"
+                      disabled={isDeleting}
+                      onClick={async () => {
+                        setIsDeleting(true);
+                        try {
+                          await onDeleteAccount();
+                        } finally {
+                          setIsDeleting(false);
+                        }
+                      }}
+                      className="ui-btn ui-btn-danger py-1 px-3 text-xs"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>
+                        {isDeleting
+                          ? isFrench
+                            ? 'Suppression...'
+                            : 'Deleting...'
+                          : isFrench
+                          ? 'Oui, supprimer'
+                          : 'Yes, Delete Account'}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
+          )}
 
           <div className="pt-2 flex items-center justify-end gap-2">
             {isEditing && onClose && (

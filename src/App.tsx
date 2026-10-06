@@ -13,8 +13,11 @@ import {
   exportStateAsJSON,
   importStateFromJSON,
   reconcileAppState,
+  resetStorage,
+  loadLocalRecoveryCode,
   AppState,
 } from './services/storage';
+import { hashRecoveryCode } from './core/security';
 import {
   SyncStatus,
   initAuthSession,
@@ -31,6 +34,8 @@ import {
   generateInviteCode,
   generateGuaranteedUniqueInviteCode,
   cloudRegisterOrUpdateUserProfile,
+  cloudLogoutUserSession,
+  cloudDeleteUserAccount,
   generateDefaultUsername,
   normalizeUsername,
   AppUser,
@@ -637,6 +642,75 @@ export default function App() {
     return { success: true };
   };
 
+  // Log Out of current account on this device (keeps cloud profile & groups intact)
+  const handleLogoutAccount = async () => {
+    const { newUser } = await cloudLogoutUserSession();
+    const cleanState = resetStorage();
+    setAppState(cleanState);
+    setActiveGroupId(null);
+    setIsEditProfileOpen(false);
+    setIsSettingsOpen(false);
+    setIsSecurityCenterOpen(false);
+    setIsAppLocked(false);
+    setCurrentUser(newUser);
+    showToast('You have logged out of your account on this device.', 'info');
+  };
+
+  // Permanently Delete User Account handler
+  const handleDeleteAccount = async () => {
+    const myMember =
+      appState.userProfile ||
+      appState.members.find(m => m.id === appState.currentUserId) ||
+      appState.members[0];
+
+    const uid = currentUser?.uid || myMember?.uid;
+    const localCode = loadLocalRecoveryCode();
+    const verifierHash = localCode ? await hashRecoveryCode(localCode) : null;
+
+    // Identify groups owned by this user vs groups where they are a participant
+    const ownedGroupsToDelete = appState.groups
+      .filter(
+        g =>
+          !g.createdBy ||
+          g.createdBy === 'anonymous' ||
+          g.createdBy.startsWith('u_') ||
+          g.createdBy === uid
+      )
+      .map(group => {
+        const expenses = appState.expenses.filter(e => e.groupId === group.id);
+        const expIds = new Set(expenses.map(e => e.id));
+        const shares = appState.expenseShares.filter(s => expIds.has(s.expenseId));
+        const settlements = appState.settlements.filter(s => s.groupId === group.id);
+        const groupMembers = appState.groupMembers.filter(gm => gm.groupId === group.id);
+        return { group, expenses, shares, settlements, groupMembers };
+      });
+
+    const ownedGroupIds = new Set(ownedGroupsToDelete.map(item => item.group.id));
+    const ownGroupMembershipsToRemove = appState.groupMembers.filter(
+      gm =>
+        !ownedGroupIds.has(gm.groupId) &&
+        (gm.memberId === myMember?.id || (uid && gm.memberUid === uid))
+    );
+
+    await cloudDeleteUserAccount({
+      member: myMember,
+      uid,
+      verifierHash,
+      ownedGroupsToDelete,
+      ownGroupMembershipsToRemove,
+    });
+
+    const cleanState = resetStorage();
+    setAppState(cleanState);
+    setActiveGroupId(null);
+    setIsEditProfileOpen(false);
+    setIsSettingsOpen(false);
+    setIsSecurityCenterOpen(false);
+    setIsAppLocked(false);
+    setCurrentUser(getOrCreateLocalUser());
+    showToast('Your account and @username have been permanently deleted.', 'info');
+  };
+
   // Create Group handler
   const handleGroupCreated = async (newGroup: Group, newMembers: Member[]) => {
     const existingMemberIds = new Set(appState.members.map(m => m.id));
@@ -1164,6 +1238,8 @@ export default function App() {
         isEditing={!needsOnboarding && isEditProfileOpen}
         onSaveUser={handleSaveUserProfile}
         onOpenRecoveryCenter={() => setIsSecurityCenterOpen(true)}
+        onLogoutAccount={handleLogoutAccount}
+        onDeleteAccount={handleDeleteAccount}
         onClose={() => setIsEditProfileOpen(false)}
         language={appState.language}
       />
@@ -1285,6 +1361,8 @@ export default function App() {
             onOpenTestRunner={() => setIsTestRunnerOpen(true)}
             onEditProfile={() => setIsEditProfileOpen(true)}
             onLockAppNow={() => setIsAppLocked(true)}
+            onLogoutAccount={handleLogoutAccount}
+            onDeleteAccount={handleDeleteAccount}
             currentMember={currentUserMember}
             syncStatus={syncStatus}
             userId={currentUser?.uid}
