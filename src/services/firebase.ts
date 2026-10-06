@@ -989,32 +989,39 @@ export function generateDefaultUsername(name: string, uid?: string): string {
 export async function cloudRegisterOrUpdateUserProfile(
   member: Member,
   previousUsername?: string
-): Promise<{ success: boolean; error?: string; member?: Member }> {
+): Promise<{ success: boolean; error?: string; member?: Member; syncedToCloud?: boolean }> {
+  const authUser = await ensureAuthUser();
+  const realAuthUid = authUser?.uid || auth.currentUser?.uid;
+  const effectiveUid = realAuthUid || member.uid || getCachedUserIdentity().uid || member.id;
+  const cleanUsername = normalizeUsername(
+    member.username || generateDefaultUsername(member.name, effectiveUid)
+  );
+
+  if (cleanUsername.length < 2) {
+    return {
+      success: false,
+      error: 'Username ID must be at least 2 characters long.',
+    };
+  }
+
+  const updatedMember: Member = sanitizeForFirestore({
+    ...member,
+    username: cleanUsername,
+    uid: effectiveUid,
+  });
+
+  // If Firebase Auth is not active (e.g., offline or Anonymous Auth provider disabled on the project),
+  // save the profile locally so the user can proceed seamlessly and sync automatically when cloud auth is ready.
+  if (!realAuthUid) {
+    return { success: true, member: updatedMember, syncedToCloud: false };
+  }
+
   try {
-    const authUser = await ensureAuthUser();
-    const effectiveUid = authUser?.uid || auth.currentUser?.uid || member.uid || member.id;
-    const cleanUsername = normalizeUsername(
-      member.username || generateDefaultUsername(member.name, effectiveUid)
-    );
-
-    if (cleanUsername.length < 2) {
-      return {
-        success: false,
-        error: 'Username ID must be at least 2 characters long.',
-      };
-    }
-
-    const updatedMember: Member = sanitizeForFirestore({
-      ...member,
-      username: cleanUsername,
-      uid: effectiveUid,
-    });
-
     const dirRef = doc(db, USER_DIRECTORY_COL, cleanUsername);
     const existingSnap = await getDoc(dirRef);
     if (existingSnap.exists()) {
       const data = existingSnap.data();
-      if (data.memberId !== member.id && data.uid !== effectiveUid) {
+      if (data.memberId !== member.id && data.uid !== realAuthUid) {
         return {
           success: false,
           error: `Username "@${cleanUsername}" is already taken by another Splitze user. Please choose a different unique ID.`,
@@ -1036,7 +1043,7 @@ export async function cloudRegisterOrUpdateUserProfile(
       sanitizeForFirestore({
         username: cleanUsername,
         memberId: updatedMember.id,
-        uid: effectiveUid,
+        uid: realAuthUid,
         name: updatedMember.name,
         avatar: updatedMember.avatar,
         color: updatedMember.color || '#101D2D',
@@ -1045,12 +1052,24 @@ export async function cloudRegisterOrUpdateUserProfile(
     );
 
     await batch.commit();
-    return { success: true, member: updatedMember };
-  } catch (err) {
+    return { success: true, member: updatedMember, syncedToCloud: true };
+  } catch (err: any) {
     console.warn('cloudRegisterOrUpdateUserProfile notice:', err);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const isPermissionOrOffline =
+      err?.code === 'permission-denied' ||
+      err?.code === 'unavailable' ||
+      errMsg.toLowerCase().includes('missing or insufficient permissions') ||
+      errMsg.toLowerCase().includes('offline');
+
+    if (isPermissionOrOffline) {
+      // Allow onboarding/profile save to succeed locally when cloud rules/auth are temporarily unreachable
+      return { success: true, member: updatedMember, syncedToCloud: false };
+    }
+
     return {
       success: false,
-      error: err instanceof Error ? err.message : String(err),
+      error: errMsg,
     };
   }
 }
@@ -1400,6 +1419,38 @@ export async function cloudUploadFullState(
     const memberLookup = new Map<string, Member>(state.members.map(m => [m.id, m]));
     const primaryGroupId = state.activeGroupId || state.groups[0]?.id;
     const ownMemberId = state.userProfile?.id || state.currentUserId;
+
+    if (state.userProfile && state.userProfile.id && realAuthUid) {
+      const cleanProfileUsername = normalizeUsername(
+        state.userProfile.username || generateDefaultUsername(state.userProfile.name, realAuthUid)
+      );
+      pendingWrites.push({
+        col: MEMBERS_COL,
+        id: state.userProfile.id,
+        data: sanitizeForFirestore({
+          ...state.userProfile,
+          username: cleanProfileUsername,
+          uid: realAuthUid,
+          groupId: state.userProfile.groupId || primaryGroupId,
+          memberUserIds: Array.from(allCoMemberUids),
+        }),
+      });
+      if (cleanProfileUsername.length >= 2) {
+        pendingWrites.push({
+          col: USER_DIRECTORY_COL,
+          id: cleanProfileUsername,
+          data: sanitizeForFirestore({
+            username: cleanProfileUsername,
+            memberId: state.userProfile.id,
+            uid: realAuthUid,
+            name: state.userProfile.name,
+            avatar: state.userProfile.avatar,
+            color: state.userProfile.color || '#101D2D',
+            updatedAt: new Date().toISOString(),
+          }),
+        });
+      }
+    }
 
     for (const m of state.members) {
       if (!m.id) continue;
