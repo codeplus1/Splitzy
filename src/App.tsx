@@ -31,6 +31,7 @@ import {
   generateInviteCode,
   generateGuaranteedUniqueInviteCode,
   cloudRegisterOrUpdateUserProfile,
+  cloudAccessExistingUsernameAccount,
   generateDefaultUsername,
   normalizeUsername,
   AppUser,
@@ -206,11 +207,11 @@ export default function App() {
     const assignedUsername =
       myProfile.username || generateDefaultUsername(myProfile.name, currentUser.uid);
 
-    if (!myProfile.username || myProfile.uid !== currentUser.uid) {
+    if (!myProfile.username) {
       const enriched: Member = {
         ...myProfile,
         username: assignedUsername,
-        uid: currentUser.uid,
+        uid: myProfile.uid || currentUser.uid,
       };
       setAppState(prev => ({
         ...prev,
@@ -218,7 +219,7 @@ export default function App() {
         members: prev.members.map(m => (m.id === enriched.id ? enriched : m)),
       }));
       cloudRegisterOrUpdateUserProfile(enriched);
-    } else {
+    } else if (myProfile.uid === currentUser.uid) {
       cloudRegisterOrUpdateUserProfile(myProfile);
     }
   }, [currentUser?.uid, appState.userProfile?.id, appState.currentUserId]);
@@ -537,7 +538,7 @@ export default function App() {
     username: string,
     avatar: string,
     color: string
-  ): Promise<{ success: boolean; error?: string }> => {
+  ): Promise<{ success: boolean; error?: string; existingAccount?: Member }> => {
     const existingMember =
       appState.members.find(m => m.id === appState.currentUserId) ||
       appState.userProfile;
@@ -563,7 +564,11 @@ export default function App() {
       existingMember?.username
     );
     if (!regResult.success) {
-      return { success: false, error: regResult.error };
+      return {
+        success: false,
+        error: regResult.error,
+        existingAccount: regResult.existingAccount,
+      };
     }
 
     const updatedMember = regResult.member || candidateMember;
@@ -630,6 +635,46 @@ export default function App() {
 
     setIsEditProfileOpen(false);
     showToast(`Profile saved as @${updatedMember.username}!`, 'success');
+    return { success: true };
+  };
+
+  // Access an existing @username account when username already exists
+  const handleAccessExistingAccount = async (
+    username: string,
+    existingAccount?: Member
+  ): Promise<{ success: boolean; error?: string }> => {
+    const res = await cloudAccessExistingUsernameAccount(username);
+    const restoredMember = res.member || existingAccount;
+    if (!res.success || !restoredMember) {
+      return {
+        success: false,
+        error: res.error || 'Could not access existing account.',
+      };
+    }
+
+    if (res.appUser) {
+      setCurrentUser(res.appUser);
+    }
+
+    setAppState(prev => {
+      const existsInMembers = prev.members.some(m => m.id === restoredMember.id);
+      const updatedMembers = existsInMembers
+        ? prev.members.map(m => (m.id === restoredMember.id ? restoredMember : m))
+        : [restoredMember, ...prev.members];
+
+      return {
+        ...prev,
+        userProfile: restoredMember,
+        currentUserId: restoredMember.id,
+        members: updatedMembers,
+      };
+    });
+
+    setIsEditProfileOpen(false);
+    showToast(
+      `Welcome back, ${restoredMember.name} (@${restoredMember.username})!`,
+      'success'
+    );
     return { success: true };
   };
 
@@ -1159,6 +1204,7 @@ export default function App() {
         initialColor={currentUserMember?.color || '#101D2D'}
         isEditing={!needsOnboarding && isEditProfileOpen}
         onSaveUser={handleSaveUserProfile}
+        onAccessExistingAccount={handleAccessExistingAccount}
         onClose={() => setIsEditProfileOpen(false)}
         language={appState.language}
       />

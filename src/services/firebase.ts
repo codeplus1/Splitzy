@@ -482,7 +482,8 @@ export interface CloudSyncData {
 export function subscribeToUserCloudSync(
   userId: string,
   onData: (data: CloudSyncData) => void,
-  onStatusChange?: (status: SyncStatus) => void
+  onStatusChange?: (status: SyncStatus) => void,
+  memberId?: string
 ): () => void {
   onStatusChange?.('syncing');
 
@@ -995,14 +996,38 @@ export function generateDefaultUsername(name: string, uid?: string): string {
 }
 
 /**
+ * Updates the active authoritative UID in localStorage so the device syncs with a restored or claimed account.
+ */
+export function setActiveAccountUid(uid: string, displayName = 'User'): AppUser {
+  const nextUser: AppUser = {
+    uid,
+    isAnonymous: true,
+    displayName,
+  };
+  try {
+    localStorage.setItem(AUTHORITATIVE_AUTH_UID_KEY, uid);
+    localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(nextUser));
+  } catch {
+    // Ignore storage issues
+  }
+  return nextUser;
+}
+
+/**
  * Registers or updates the current user's profile and unique @username in Firestore
  * (`members` and `userDirectory` collections). Verifies that the username is not already
- * claimed by a different user ID.
+ * claimed by a different user ID. If already registered, returns `existingAccount` so the
+ * user can choose to access their existing account.
  */
 export async function cloudRegisterOrUpdateUserProfile(
   member: Member,
   previousUsername?: string
-): Promise<{ success: boolean; error?: string; member?: Member }> {
+): Promise<{
+  success: boolean;
+  error?: string;
+  member?: Member;
+  existingAccount?: Member;
+}> {
   try {
     const authUser = await ensureAuthUser();
     const effectiveUid =
@@ -1033,9 +1058,19 @@ export async function cloudRegisterOrUpdateUserProfile(
     if (existingSnap.exists()) {
       const data = existingSnap.data();
       if (data.memberId !== member.id && data.uid !== effectiveUid) {
+        const existingAccount: Member = {
+          id: data.memberId,
+          username: data.username || cleanUsername,
+          uid: data.uid,
+          name: data.name || member.name,
+          avatar: data.avatar || '👨‍💻',
+          color: data.color || '#101D2D',
+          createdAt: data.updatedAt || new Date().toISOString(),
+        };
         return {
           success: false,
-          error: `Username "@${cleanUsername}" is already taken by another Splitze user. Please choose a different unique ID.`,
+          existingAccount,
+          error: `Username "@${cleanUsername}" is already registered (${existingAccount.name}). If this is your account, you can access it below, or choose a different @username.`,
         };
       }
     }
@@ -1067,18 +1102,122 @@ export async function cloudRegisterOrUpdateUserProfile(
   } catch (err: any) {
     console.warn('cloudRegisterOrUpdateUserProfile notice:', err);
     const errMsg = err instanceof Error ? err.message : String(err);
+    const cleanUsername = normalizeUsername(member.username || '');
     if (
       err?.code === 'permission-denied' ||
       errMsg.toLowerCase().includes('missing or insufficient permissions')
     ) {
+      try {
+        const snap = await getDoc(doc(db, USER_DIRECTORY_COL, cleanUsername));
+        if (snap.exists()) {
+          const d = snap.data();
+          const existingAccount: Member = {
+            id: d.memberId,
+            username: d.username || cleanUsername,
+            uid: d.uid,
+            name: d.name || member.name,
+            avatar: d.avatar || '👨‍💻',
+            color: d.color || '#101D2D',
+            createdAt: d.updatedAt || new Date().toISOString(),
+          };
+          return {
+            success: false,
+            existingAccount,
+            error: `Username "@${cleanUsername}" is already registered (${existingAccount.name}). If this is your account, you can access it below, or choose a different @username.`,
+          };
+        }
+      } catch {
+        // Ignore fallback lookup error
+      }
       return {
         success: false,
-        error: `Username "@${normalizeUsername(member.username || '')}" is already claimed by another user. Please choose a different unique @username.`,
+        error: `Username "@${cleanUsername}" is already claimed by another user. Please choose a different unique @username.`,
       };
     }
     return {
       success: false,
       error: errMsg,
+    };
+  }
+}
+
+/**
+ * Accesses an existing registered @username account and links the current device session
+ * so the user can immediately access their existing profile and groups.
+ */
+export async function cloudAccessExistingUsernameAccount(
+  rawUsername: string
+): Promise<{
+  success: boolean;
+  member?: Member;
+  appUser?: AppUser;
+  error?: string;
+}> {
+  const cleanUsername = normalizeUsername(rawUsername);
+  if (!cleanUsername || cleanUsername.length < 2) {
+    return {
+      success: false,
+      error: 'Please enter a valid @username.',
+    };
+  }
+
+  try {
+    const authUser = await ensureAuthUser();
+    const currentAuthUid = authUser?.uid || auth.currentUser?.uid;
+
+    const dirRef = doc(db, USER_DIRECTORY_COL, cleanUsername);
+    const dirSnap = await getDoc(dirRef);
+    if (!dirSnap.exists()) {
+      return {
+        success: false,
+        error: `No existing account found for "@${cleanUsername}".`,
+      };
+    }
+
+    const d = dirSnap.data();
+    const accountUid: string = d.uid || currentAuthUid || `u_${cleanUsername}`;
+    const memberId: string = d.memberId || `m_owner_${cleanUsername}`;
+
+    let restoredMember: Member = {
+      id: memberId,
+      username: d.username || cleanUsername,
+      uid: accountUid,
+      name: d.name || cleanUsername,
+      avatar: d.avatar || '👨‍💻',
+      color: d.color || '#101D2D',
+      createdAt: d.updatedAt || new Date().toISOString(),
+    };
+
+    try {
+      const memSnap = await getDoc(doc(db, MEMBERS_COL, memberId));
+      if (memSnap.exists()) {
+        const memData = memSnap.data() as Member;
+        restoredMember = {
+          ...restoredMember,
+          ...memData,
+          id: memberId,
+          username: d.username || cleanUsername,
+          uid: memData.uid || accountUid,
+        };
+      }
+    } catch {
+      // Directory profile metadata is sufficient if /members/{id} is scoped to a different UID
+    }
+
+    const appUser = setActiveAccountUid(
+      accountUid,
+      restoredMember.name
+    );
+
+    return {
+      success: true,
+      member: restoredMember,
+      appUser,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Could not access existing account.',
     };
   }
 }
