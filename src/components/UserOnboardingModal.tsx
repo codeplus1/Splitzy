@@ -29,6 +29,7 @@ interface UserOnboardingModalProps {
   initialUsername?: string;
   initialAvatar?: string;
   initialColor?: string;
+  initialAuthTab?: 'register' | 'login';
   hasPassword?: boolean;
   isEditing?: boolean;
   onSaveUser: (
@@ -67,6 +68,7 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   initialUsername = '',
   initialAvatar = '👨‍💻',
   initialColor = '#101D2D',
+  initialAuthTab = 'register',
   hasPassword = false,
   isEditing = false,
   onSaveUser,
@@ -78,7 +80,7 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   onClose,
   language,
 }) => {
-  const [authTab, setAuthTab] = useState<'register' | 'login'>('register');
+  const [authTab, setAuthTab] = useState<'register' | 'login'>(initialAuthTab);
   const [name, setName] = useState(initialName);
   const [username, setUsername] = useState(initialUsername);
   const [hasEditedUsernameManually, setHasEditedUsernameManually] = useState(Boolean(initialUsername));
@@ -106,7 +108,6 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   const [isUsernameTaken, setIsUsernameTaken] = useState(false);
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -117,7 +118,7 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   React.useEffect(() => {
     if (isOpen && !wasOpenRef.current) {
       wasOpenRef.current = true;
-      setAuthTab('register');
+      setAuthTab(initialAuthTab);
       setName(initialName);
       setUsername(initialUsername);
       setHasEditedUsernameManually(Boolean(initialUsername));
@@ -131,14 +132,26 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
       setError(null);
       setIsUsernameTaken(false);
       setIsSaving(false);
-      setShowLogoutConfirm(false);
       setIsLoggingOut(false);
       setShowDeleteConfirm(false);
       setIsDeleting(false);
     } else if (!isOpen) {
       wasOpenRef.current = false;
     }
-  }, [isOpen, initialName, initialUsername, initialAvatar, initialColor]);
+  }, [isOpen, initialName, initialUsername, initialAvatar, initialColor, initialAuthTab]);
+
+  // If user just logged out while modal opens or transitions to onboarding, switch immediately to login tab with their @username pre-filled
+  React.useEffect(() => {
+    if (isOpen && !isEditing && initialAuthTab === 'login') {
+      setAuthTab('login');
+      if (initialUsername) {
+        setLoginUsername(initialUsername);
+      }
+      setLoginPasswordOrPin('');
+      setPinVerifiedStep(null);
+      setError(null);
+    }
+  }, [isOpen, isEditing, initialAuthTab, initialUsername]);
 
   if (!isOpen) return null;
 
@@ -560,7 +573,7 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                 <input
                   id="login-username-input"
                   type="text"
-                  autoFocus
+                  autoFocus={!loginUsername}
                   required
                   placeholder="saroj_88"
                   value={loginUsername}
@@ -587,6 +600,7 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                 <input
                   id="login-password-or-pin-input"
                   type={showLoginPassword ? 'text' : 'password'}
+                  autoFocus={Boolean(loginUsername)}
                   required
                   placeholder={
                     isFrench
@@ -890,13 +904,21 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
 
             {isEditing && (onLogoutAccount || onDeleteAccount) && (
               <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2.5">
-                {!showLogoutConfirm && !showDeleteConfirm && (
+                {!showDeleteConfirm && (
                   <div className="flex items-center justify-between gap-3">
                     {onLogoutAccount && (
                       <button
                         id="profile-modal-logout-account-btn"
                         type="button"
-                        onClick={() => setShowLogoutConfirm(true)}
+                        disabled={isLoggingOut}
+                        onClick={async () => {
+                          setIsLoggingOut(true);
+                          try {
+                            await onLogoutAccount();
+                          } finally {
+                            setIsLoggingOut(false);
+                          }
+                        }}
                         className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--ink-secondary)] hover:text-[var(--ink)] hover:underline cursor-pointer"
                       >
                         <LogOut className="w-3.5 h-3.5" />
@@ -915,51 +937,6 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                         <span>{isFrench ? 'Supprimer mon compte' : 'Delete My Account'}</span>
                       </button>
                     )}
-                  </div>
-                )}
-
-                {showLogoutConfirm && onLogoutAccount && (
-                  <div className="p-3 rounded-xl bg-[var(--surface-subtle)] border border-[var(--border-strong)] space-y-2.5">
-                    <p className="text-xs font-medium text-[var(--ink)] leading-snug">
-                      {isFrench
-                        ? 'Se déconnecter de cet appareil ? Votre compte cloud est conservé.'
-                        : 'Log out of your account on this device? Your cloud account and @username remain saved.'}
-                    </p>
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        disabled={isLoggingOut}
-                        onClick={() => setShowLogoutConfirm(false)}
-                        className="ui-btn ui-btn-secondary py-1 px-2.5 text-xs"
-                      >
-                        {isFrench ? 'Annuler' : 'Cancel'}
-                      </button>
-                      <button
-                        id="profile-modal-confirm-logout-account-btn"
-                        type="button"
-                        disabled={isLoggingOut}
-                        onClick={async () => {
-                          setIsLoggingOut(true);
-                          try {
-                            await onLogoutAccount();
-                          } finally {
-                            setIsLoggingOut(false);
-                          }
-                        }}
-                        className="ui-btn ui-btn-primary py-1 px-3 text-xs"
-                      >
-                        <LogOut className="w-3.5 h-3.5" />
-                        <span>
-                          {isLoggingOut
-                            ? isFrench
-                              ? 'Déconnexion...'
-                              : 'Logging out...'
-                            : isFrench
-                            ? 'Oui, me déconnecter'
-                            : 'Yes, Log Out'}
-                        </span>
-                      </button>
-                    </div>
                   </div>
                 )}
 

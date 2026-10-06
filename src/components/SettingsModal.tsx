@@ -229,52 +229,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </button>
                   )}
 
-                  {onLogoutAccount && !isConfirmingLogout && (
+                  {onLogoutAccount && (
                     <button
                       id="settings-profile-logout-btn"
-                      type="button"
-                      onClick={() => setIsConfirmingLogout(true)}
-                      className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs shrink-0 text-[var(--ink-secondary)] hover:text-rose-600 dark:hover:text-rose-400"
-                      title={language === 'fr' ? 'Se déconnecter' : 'Log Out'}
-                    >
-                      <LogOut className="w-3.5 h-3.5" />
-                      <span>{language === 'fr' ? 'Déconnexion' : 'Log Out'}</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {onLogoutAccount && isConfirmingLogout && (
-                <div className="p-3 rounded-xl bg-[var(--surface)] border border-[var(--border-strong)] space-y-2.5">
-                  <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
-                    {language === 'fr'
-                      ? 'Se déconnecter de cet appareil ? Vos groupes et votre @username restent sauvegardés dans le cloud (pensez à conserver votre code de récupération ou une sauvegarde).'
-                      : 'Log out of your account on this device? Your cloud profile and groups remain safely stored (make sure you have saved your Recovery Code or Backup to sign back in later).'}
-                  </p>
-                  <div className="flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      disabled={isLoggingOut}
-                      onClick={() => setIsConfirmingLogout(false)}
-                      className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs"
-                    >
-                      {language === 'fr' ? 'Annuler' : 'Cancel'}
-                    </button>
-                    <button
-                      id="settings-confirm-logout-btn"
                       type="button"
                       disabled={isLoggingOut}
                       onClick={async () => {
                         setIsLoggingOut(true);
                         try {
                           await onLogoutAccount();
-                          setIsConfirmingLogout(false);
                           onClose();
                         } finally {
                           setIsLoggingOut(false);
                         }
                       }}
-                      className="ui-btn ui-btn-primary py-1.5 px-3.5 text-xs"
+                      className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs shrink-0 text-[var(--ink-secondary)] hover:text-rose-600 dark:hover:text-rose-400"
+                      title={language === 'fr' ? 'Se déconnecter' : 'Log Out'}
                     >
                       <LogOut className="w-3.5 h-3.5" />
                       <span>
@@ -283,13 +253,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             ? 'Déconnexion...'
                             : 'Logging out...'
                           : language === 'fr'
-                          ? 'Confirmer la déconnexion'
+                          ? 'Déconnexion'
                           : 'Log Out'}
                       </span>
                     </button>
-                  </div>
+                  )}
                 </div>
-              )}
+              </div>
             </section>
           )}
 

@@ -5,6 +5,7 @@ import {
   CloudOff,
   RefreshCw,
   Lock,
+  LogOut,
 } from 'lucide-react';
 import { Member, SupportedLanguage } from '../types';
 import { SyncStatus } from '../services/firebase';
@@ -19,6 +20,7 @@ interface HeaderProps {
   onOpenSettings: () => void;
   onHomeClick?: () => void;
   onLockAppClick?: () => void;
+  onLogoutClick?: () => void;
   currentMember?: Member;
   onEditUserClick?: () => void;
   syncStatus?: SyncStatus;
@@ -28,6 +30,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenSettings,
   onHomeClick,
   onLockAppClick,
+  onLogoutClick,
   currentMember,
   onEditUserClick,
   syncStatus = 'connected',
@@ -142,6 +145,20 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <Settings className="w-3.5 h-3.5 group-hover:rotate-45 transition-transform duration-200" />
           </button>
+
+          {/* Direct Logout Button (no confirmation, goes straight to Login page) */}
+          {onLogoutClick && (
+            <button
+              id="header-logout-btn"
+              type="button"
+              onClick={onLogoutClick}
+              className="group w-8 h-8 flex items-center justify-center rounded-lg text-[var(--ink-secondary)] bg-[var(--surface-subtle)] hover:bg-rose-50 dark:hover:bg-rose-950/40 hover:text-rose-600 dark:hover:text-rose-400 hover:border-rose-300 dark:hover:border-rose-800 hover:-translate-y-0.5 active:translate-y-0 active:scale-95 transition-all border border-[var(--border)] cursor-pointer shrink-0"
+              title="Log Out"
+              aria-label="Log Out"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
     </header>

@@ -15,6 +15,8 @@ import {
   reconcileAppState,
   resetStorage,
   loadLocalRecoveryCode,
+  saveLocalAccountCredential,
+  getLocalAccountCredential,
   AppState,
 } from './services/storage';
 import { hashRecoveryCode } from './core/security';
@@ -57,6 +59,7 @@ import {
   AppLockScreen,
   isAppLockEnabled,
   getAppLockTimeoutMs,
+  getStoredAppLockPinHash,
 } from './components/AppLockScreen';
 
 const AddExpenseModal = lazy(() =>
@@ -108,6 +111,20 @@ export default function App() {
   const [isSecurityCenterOpen, setIsSecurityCenterOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
+  const [lastLoggedOutUsername, setLastLoggedOutUsername] = useState<string>(() => {
+    try {
+      return localStorage.getItem('splitze_last_logged_out_username') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [onboardingAuthTab, setOnboardingAuthTab] = useState<'register' | 'login'>(() => {
+    try {
+      return localStorage.getItem('splitze_last_logged_out_username') ? 'login' : 'register';
+    } catch {
+      return 'register';
+    }
+  });
   const [isAppLocked, setIsAppLocked] = useState<boolean>(() => {
     const hasUser = Boolean(appState.userProfile || appState.members.length > 0);
     return hasUser && isAppLockEnabled();
@@ -709,6 +726,11 @@ export default function App() {
 
     if (res.member) {
       const loggedInMember = res.member;
+      try {
+        localStorage.removeItem('splitze_last_logged_out_username');
+      } catch {
+        // Ignore
+      }
       if (res.appUser) {
         setCurrentUser(res.appUser);
       }
@@ -745,6 +767,11 @@ export default function App() {
     }
 
     const loggedInMember = res.member;
+    try {
+      localStorage.removeItem('splitze_last_logged_out_username');
+    } catch {
+      // Ignore
+    }
     if (res.appUser) {
       setCurrentUser(res.appUser);
     }
@@ -764,18 +791,67 @@ export default function App() {
     return { success: true };
   };
 
-  // Log Out of current account on this device (keeps cloud profile & groups intact)
+  // Log Out of current account on this device immediately without confirmation and go directly to the Login page for the user who just logged out
   const handleLogoutAccount = async () => {
-    const { newUser } = await cloudLogoutUserSession();
+    const loggedOutMember =
+      appState.userProfile ||
+      appState.members.find(m => m.id === appState.currentUserId) ||
+      appState.members[0];
+    const loggedOutHandle = loggedOutMember?.username
+      ? normalizeUsername(loggedOutMember.username)
+      : loggedOutMember?.name
+      ? generateDefaultUsername(loggedOutMember.name, currentUser?.uid)
+      : '';
+
+    // Ensure the user's local account credential entry is preserved before resetting local app state
+    if (loggedOutMember && loggedOutHandle.length >= 2) {
+      const existingCred = getLocalAccountCredential(loggedOutHandle);
+      const pinHash =
+        loggedOutMember.pinHash ||
+        existingCred?.pinHash ||
+        getStoredAppLockPinHash() ||
+        undefined;
+      const passwordHash =
+        loggedOutMember.passwordHash || existingCred?.passwordHash || undefined;
+      saveLocalAccountCredential({
+        username: loggedOutHandle,
+        memberId: loggedOutMember.id,
+        uid: loggedOutMember.uid || currentUser?.uid || existingCred?.uid || loggedOutMember.id,
+        name: loggedOutMember.name,
+        avatar: loggedOutMember.avatar,
+        color: loggedOutMember.color || '#101D2D',
+        passwordHash,
+        pinHash,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    try {
+      if (loggedOutHandle) {
+        localStorage.setItem('splitze_last_logged_out_username', loggedOutHandle);
+      }
+    } catch {
+      // Ignore storage error
+    }
+
     const cleanState = resetStorage();
+    setLastLoggedOutUsername(loggedOutHandle);
+    setOnboardingAuthTab('login');
     setAppState(cleanState);
     setActiveGroupId(null);
     setIsEditProfileOpen(false);
     setIsSettingsOpen(false);
     setIsSecurityCenterOpen(false);
     setIsAppLocked(false);
+
+    const { newUser } = await cloudLogoutUserSession();
     setCurrentUser(newUser);
-    showToast('You have logged out of your account on this device.', 'info');
+    showToast(
+      loggedOutHandle
+        ? `Logged out of @${loggedOutHandle}. Sign in below to access your account.`
+        : 'You have logged out of your account.',
+      'info'
+    );
   };
 
   // Permanently Delete User Account handler
@@ -1320,6 +1396,7 @@ export default function App() {
         onOpenSettings={() => setIsSettingsOpen(true)}
         onHomeClick={() => setActiveGroupId(null)}
         onLockAppClick={isAppLockEnabled() ? () => setIsAppLocked(true) : undefined}
+        onLogoutClick={currentUserMember ? handleLogoutAccount : undefined}
         currentMember={currentUserMember}
         onEditUserClick={() => setIsEditProfileOpen(true)}
         syncStatus={syncStatus}
@@ -1374,7 +1451,7 @@ export default function App() {
         )}
       </main>
 
-      {/* First-Time User Name Onboarding / Edit Profile Modal */}
+      {/* First-Time User Name Onboarding / Account Login / Edit Profile Modal */}
       <UserOnboardingModal
         isOpen={(needsOnboarding || isEditProfileOpen) && !isSecurityCenterOpen}
         initialName={currentUserMember?.name || ''}
@@ -1382,10 +1459,11 @@ export default function App() {
           currentUserMember?.username ||
           (currentUserMember?.name
             ? generateDefaultUsername(currentUserMember.name, currentUser?.uid)
-            : '')
+            : lastLoggedOutUsername)
         }
         initialAvatar={currentUserMember?.avatar || '👨‍💻'}
         initialColor={currentUserMember?.color || '#101D2D'}
+        initialAuthTab={needsOnboarding ? onboardingAuthTab : 'register'}
         hasPassword={Boolean(currentUserMember?.passwordHash)}
         isEditing={!needsOnboarding && isEditProfileOpen}
         onSaveUser={handleSaveUserProfile}
