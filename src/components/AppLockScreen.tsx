@@ -2,8 +2,11 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Lock, Delete, ShieldCheck } from 'lucide-react';
 import { SupportedLanguage } from '../types';
 import { SplitzeLogo } from './SplitzeLogo';
+import { getLocalAccountCredential, saveLocalAccountCredential, loadAppState } from '../services/storage';
+import { normalizeUsername } from '../services/firebase';
 
 const APP_LOCK_PIN_HASH_KEY = 'splitzy_app_lock_pin_hash';
+const APP_LOCK_SAVED_PIN_BACKUP_KEY = 'splitzy_saved_pin_hash_backup';
 const APP_LOCK_ENABLED_KEY = 'splitzy_app_lock_enabled';
 const APP_LOCK_TIMEOUT_MS_KEY = 'splitzy_app_lock_timeout_ms';
 
@@ -47,7 +50,7 @@ export function setAppLockTimeoutMs(timeoutMs: number): void {
 }
 
 /**
- * Computes a deterministic salted hash of a 4-digit PIN for local verification.
+ * Computes a deterministic salted 64-character hex hash of a 4-digit PIN for local & cloud verification.
  */
 export async function hashPin(pin: string): Promise<string> {
   const clean = pin.trim();
@@ -59,14 +62,30 @@ export async function hashPin(pin: string): Promise<string> {
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
   }
-  // Fallback deterministic hash if SubtleCrypto is unavailable
-  let h = 2166136261;
+  // Fallback deterministic 64-char hex hash if SubtleCrypto is unavailable
   const salted = `splitzy_pin_v1:${clean}`;
-  for (let i = 0; i < salted.length; i++) {
-    h ^= salted.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+  let out = '';
+  for (let round = 0; round < 8; round++) {
+    let h = (2166136261 ^ round) >>> 0;
+    for (let i = 0; i < salted.length; i++) {
+      h ^= salted.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    out += (h >>> 0).toString(16).padStart(8, '0');
   }
-  return (h >>> 0).toString(16).padStart(8, '0');
+  return out.slice(0, 64);
+}
+
+export function getStoredAppLockPinHash(): string | null {
+  try {
+    return (
+      localStorage.getItem(APP_LOCK_PIN_HASH_KEY) ||
+      localStorage.getItem(APP_LOCK_SAVED_PIN_BACKUP_KEY) ||
+      null
+    );
+  } catch {
+    return null;
+  }
 }
 
 export function isAppLockEnabled(): boolean {
@@ -80,18 +99,37 @@ export function isAppLockEnabled(): boolean {
   }
 }
 
-export async function saveAppLockPin(pin: string): Promise<void> {
+export async function saveAppLockPin(pin: string): Promise<string> {
   const hashed = await hashPin(pin);
   try {
     localStorage.setItem(APP_LOCK_PIN_HASH_KEY, hashed);
+    localStorage.setItem(APP_LOCK_SAVED_PIN_BACKUP_KEY, hashed);
     localStorage.setItem(APP_LOCK_ENABLED_KEY, 'true');
     if (localStorage.getItem(APP_LOCK_TIMEOUT_MS_KEY) === null) {
       localStorage.setItem(APP_LOCK_TIMEOUT_MS_KEY, String(DEFAULT_AUTO_LOCK_TIMEOUT_MS));
+    }
+    const state = loadAppState();
+    const prof = state.userProfile;
+    if (prof?.username) {
+      const cleanUsername = normalizeUsername(prof.username);
+      const existingCred = getLocalAccountCredential(cleanUsername);
+      saveLocalAccountCredential({
+        username: cleanUsername,
+        memberId: prof.id || existingCred?.memberId || `m_owner_${cleanUsername}`,
+        uid: prof.uid || existingCred?.uid || '',
+        name: prof.name || existingCred?.name || cleanUsername,
+        avatar: prof.avatar || existingCred?.avatar || '👨‍💻',
+        color: prof.color || existingCred?.color || '#101D2D',
+        passwordHash: prof.passwordHash || existingCred?.passwordHash,
+        pinHash: hashed,
+        updatedAt: new Date().toISOString(),
+      });
     }
     window.dispatchEvent(new Event('splitzy-autolock-config-changed'));
   } catch {
     // Ignore storage errors
   }
+  return hashed;
 }
 
 export function disableAppLockPin(): void {

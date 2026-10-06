@@ -264,7 +264,9 @@ service cloud.firestore {
         data.name.size() <= 100 &&
         (!('username' in data) || (data.username is string && data.username.size() >= 2 && data.username.size() <= 40)) &&
         (!('groupId' in data) || isValidId(data.groupId)) &&
-        (!('memberUserIds' in data) || (data.memberUserIds is list && data.memberUserIds.size() <= 100));
+        (!('memberUserIds' in data) || (data.memberUserIds is list && data.memberUserIds.size() <= 100)) &&
+        (!('passwordHash' in data) || isValidVerifierHash(data.passwordHash)) &&
+        (!('pinHash' in data) || isValidVerifierHash(data.pinHash));
     }
 
     function isValidGroupMember(data) {
@@ -358,6 +360,8 @@ service cloud.firestore {
         data.name is string &&
         data.name.size() > 0 &&
         data.name.size() <= 100 &&
+        (!('passwordHash' in data) || isValidVerifierHash(data.passwordHash)) &&
+        (!('pinHash' in data) || isValidVerifierHash(data.pinHash)) &&
         data.keys().hasOnly([
           'username',
           'memberId',
@@ -365,6 +369,8 @@ service cloud.firestore {
           'name',
           'avatar',
           'color',
+          'passwordHash',
+          'pinHash',
           'updatedAt'
         ]);
     }
@@ -406,10 +412,24 @@ service cloud.firestore {
       allow update: if isValidId(memberId) &&
         isValidMember(incoming()) &&
         incoming().id == memberId &&
-        isMemberProfileOwner(existing()) &&
         isMemberProfileOwner(incoming()) &&
-        existing().uid == incoming().uid &&
-        (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt);
+        (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) && (
+          (
+            isMemberProfileOwner(existing()) &&
+            existing().uid == incoming().uid
+          ) ||
+          (
+            isSignedIn() &&
+            'uid' in existing() &&
+            existing().uid is string &&
+            existing().uid.size() > 0 &&
+            'username' in incoming() &&
+            isValidUsernameHandle(incoming().username) &&
+            existsAfter(/databases/$(database)/documents/userDirectory/$(incoming().username)) &&
+            getAfter(/databases/$(database)/documents/userDirectory/$(incoming().username)).data.memberId == memberId &&
+            getAfter(/databases/$(database)/documents/userDirectory/$(incoming().username)).data.uid == request.auth.uid
+          )
+        );
       allow delete: if isValidId(memberId) &&
         (resource == null || isMemberProfileOwner(existing()));
     }
@@ -577,7 +597,7 @@ service cloud.firestore {
         request.auth.uid == uid;
     }
 
-    // 10. User Directory (O(1) handle lookup; list forbidden; only owner of both UID and memberId can create/update/delete)
+    // 10. User Directory (O(1) handle lookup; list forbidden; only owner or password/PIN-verified user can update)
     match /userDirectory/{username} {
       allow get: if isValidUsernameHandle(username);
       allow list: if false;
@@ -589,10 +609,22 @@ service cloud.firestore {
       allow update: if isValidUsernameHandle(username) &&
         isValidUserDirectory(incoming()) &&
         incoming().username == username &&
-        existing().uid == incoming().uid &&
         existing().memberId == incoming().memberId &&
-        isAuthorizedIdentity(existing().uid) &&
-        isMemberOwner(incoming().memberId);
+        isAuthorizedIdentity(incoming().uid) && (
+          (
+            existing().uid == incoming().uid &&
+            isAuthorizedIdentity(existing().uid) &&
+            isMemberOwner(incoming().memberId)
+          ) ||
+          (
+            isSignedIn() &&
+            'passwordHash' in incoming() &&
+            isValidVerifierHash(incoming().passwordHash) && (
+              !('passwordHash' in existing()) ||
+              incoming().passwordHash == existing().passwordHash
+            )
+          )
+        );
       allow delete: if isValidUsernameHandle(username) &&
         (resource == null || (isAuthorizedIdentity(existing().uid) && isMemberOwner(existing().memberId)));
     }

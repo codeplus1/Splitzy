@@ -22,7 +22,8 @@ export interface AppState {
   currentUserId: string; // for personal balance perspective
   userProfile?: Member; // The primary owner/user profile saved when opening the app
   pendingGroupIds?: string[]; // IDs of groups created locally in this session pending cloud confirmation
-  pendingExpenseIds?: string[]; // IDs of expenses created locally pending cloud confirmation
+  pendingExpenseIds?: string[]; // IDs of expenses created/edited locally pending cloud confirmation
+  pendingSettlementIds?: string[]; // IDs of settlements recorded locally pending cloud confirmation
   deletedExpenseIds?: string[]; // Tombstones to prevent deleted expenses from resurfacing during merge
   deletedGroupIds?: string[]; // Tombstones to prevent deleted groups from resurfacing during merge
   userSecurityProfile?: UserSecurityProfile;
@@ -32,13 +33,79 @@ const STORAGE_KEY = 'hisab_sathi_v1_store';
 const RECOVERY_CODE_STORAGE_KEY = 'hisab_sathi_local_recovery_code';
 const DATA_EPOCH_KEY = 'splitzy_clean_epoch_v5';
 const APP_LOCK_PIN_HASH_KEY = 'splitzy_app_lock_pin_hash';
+const APP_LOCK_SAVED_PIN_BACKUP_KEY = 'splitzy_saved_pin_hash_backup';
 const APP_LOCK_ENABLED_KEY = 'splitzy_app_lock_enabled';
 const APP_LOCK_TIMEOUT_MS_KEY = 'splitzy_app_lock_timeout_ms';
 const AUTHORITATIVE_AUTH_UID_KEY = 'hisabsathi_auth_uid';
 const LOCAL_USER_KEY = 'hisabsathi_client_session_user';
+const ACCOUNT_CREDENTIALS_STORAGE_KEY = 'splitzy_account_credentials_v1';
+
+export interface StoredAccountCredential {
+  username: string;
+  memberId: string;
+  uid?: string;
+  name: string;
+  avatar?: string;
+  color?: string;
+  passwordHash?: string;
+  pinHash?: string;
+  updatedAt: string;
+}
+
+export function saveLocalAccountCredential(cred: StoredAccountCredential): void {
+  try {
+    const clean = cred.username.trim().toLowerCase().replace(/^@+/, '');
+    if (!clean) return;
+    const raw = localStorage.getItem(ACCOUNT_CREDENTIALS_STORAGE_KEY);
+    const map: Record<string, StoredAccountCredential> = raw ? JSON.parse(raw) : {};
+    const prev = map[clean] || ({} as Partial<StoredAccountCredential>);
+    map[clean] = {
+      ...prev,
+      ...cred,
+      username: clean,
+      passwordHash: cred.passwordHash || prev.passwordHash,
+      pinHash: cred.pinHash || prev.pinHash,
+      updatedAt: new Date().toISOString(),
+    };
+    localStorage.setItem(ACCOUNT_CREDENTIALS_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // Ignore storage issues
+  }
+}
+
+export function getLocalAccountCredential(username: string): StoredAccountCredential | null {
+  try {
+    const clean = username.trim().toLowerCase().replace(/^@+/, '');
+    if (!clean) return null;
+    const raw = localStorage.getItem(ACCOUNT_CREDENTIALS_STORAGE_KEY);
+    if (!raw) return null;
+    const map: Record<string, StoredAccountCredential> = JSON.parse(raw);
+    return map[clean] || null;
+  } catch {
+    return null;
+  }
+}
+
+export function removeLocalAccountCredential(username: string): void {
+  try {
+    const clean = username.trim().toLowerCase().replace(/^@+/, '');
+    if (!clean) return;
+    const raw = localStorage.getItem(ACCOUNT_CREDENTIALS_STORAGE_KEY);
+    if (!raw) return;
+    const map: Record<string, StoredAccountCredential> = JSON.parse(raw);
+    delete map[clean];
+    localStorage.setItem(ACCOUNT_CREDENTIALS_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // Ignore storage issues
+  }
+}
 
 export function clearAllLocalLocksAndSessionKeys(): void {
   try {
+    const existingPinHash = localStorage.getItem(APP_LOCK_PIN_HASH_KEY);
+    if (existingPinHash) {
+      localStorage.setItem(APP_LOCK_SAVED_PIN_BACKUP_KEY, existingPinHash);
+    }
     localStorage.removeItem(APP_LOCK_PIN_HASH_KEY);
     localStorage.removeItem(APP_LOCK_ENABLED_KEY);
     localStorage.removeItem(APP_LOCK_TIMEOUT_MS_KEY);
@@ -64,6 +131,7 @@ export function getInitialCleanState(): AppState {
     currentUserId: '',
     pendingGroupIds: [],
     pendingExpenseIds: [],
+    pendingSettlementIds: [],
     deletedExpenseIds: [],
     deletedGroupIds: [],
   };
@@ -132,6 +200,7 @@ export function loadAppState(): AppState {
       userProfile: resolvedUserProfile,
       pendingGroupIds: parsed.pendingGroupIds || [],
       pendingExpenseIds: parsed.pendingExpenseIds || [],
+      pendingSettlementIds: parsed.pendingSettlementIds || [],
       deletedExpenseIds: parsed.deletedExpenseIds || [],
       deletedGroupIds: parsed.deletedGroupIds || [],
       userSecurityProfile: parsed.userSecurityProfile,
@@ -177,7 +246,7 @@ export function clearLocalRecoveryCode(): void {
 /**
  * Reconciles local and cloud data ensuring zero data loss:
  * 1. An empty or partial cloud result NEVER destroys valid local expenses.
- * 2. Unsynchronized local expenses remain preserved until cloud confirms them.
+ * 2. Unsynchronized local expenses (and offline edits) remain preserved until cloud confirms them.
  * 3. Deleted items tracked in tombstones are not resurrected.
  * 4. Duplicate IDs are deduplicated.
  */
@@ -195,6 +264,8 @@ export function reconcileAppState(
   const deletedExpenseSet = new Set(local.deletedExpenseIds || []);
   const deletedGroupSet = new Set(local.deletedGroupIds || []);
   const pendingGroupSet = new Set(local.pendingGroupIds || []);
+  const pendingExpenseSet = new Set(local.pendingExpenseIds || []);
+  const pendingSettlementSet = new Set(local.pendingSettlementIds || []);
   const cloudGroupIdSet = new Set(cloud.groups.map(g => g.id));
 
   // 1. Reconcile Groups
@@ -247,7 +318,13 @@ export function reconcileAppState(
   });
   cloud.members.forEach(m => {
     if (!m.groupId || validGroupIdSet.has(m.groupId)) {
-      memberMap.set(m.id, m);
+      const existingMem = memberMap.get(m.id);
+      memberMap.set(m.id, {
+        ...existingMem,
+        ...m,
+        passwordHash: m.passwordHash || existingMem?.passwordHash,
+        pinHash: m.pinHash || existingMem?.pinHash,
+      });
     }
   });
 
@@ -264,7 +341,7 @@ export function reconcileAppState(
     }
   });
 
-  // 4. Reconcile Expenses (CRITICAL: Do not drop local expenses that cloud hasn't received or confirmed yet)
+  // 4. Reconcile Expenses (CRITICAL: Do not drop or overwrite local offline expenses/edits that cloud hasn't received yet)
   const expenseMap = new Map<string, Expense>();
   
   // First, insert local expenses that were not explicitly deleted
@@ -278,18 +355,19 @@ export function reconcileAppState(
     }
   });
 
-  // Next, merge cloud expenses (cloud takes precedence for confirmed state, but ignores tombstoned)
+  // Next, merge cloud expenses (cloud takes precedence ONLY for confirmed items not currently pending offline sync)
   cloud.expenses.forEach(e => {
     if (
       !deletedExpenseSet.has(e.id) &&
       !deletedGroupSet.has(e.groupId) &&
-      validGroupIdSet.has(e.groupId)
+      validGroupIdSet.has(e.groupId) &&
+      !pendingExpenseSet.has(e.id)
     ) {
       expenseMap.set(e.id, e);
     }
   });
 
-  // 5. Reconcile ExpenseShares (only keep shares for valid expenses)
+  // 5. Reconcile ExpenseShares (only keep shares for valid expenses; preserve local shares for pending offline expenses)
   const validExpenseIds = new Set(expenseMap.keys());
   const shareMap = new Map<string, ExpenseShare>();
 
@@ -300,7 +378,7 @@ export function reconcileAppState(
   });
 
   cloud.expenseShares.forEach(s => {
-    if (validExpenseIds.has(s.expenseId)) {
+    if (validExpenseIds.has(s.expenseId) && !pendingExpenseSet.has(s.expenseId)) {
       shareMap.set(s.id, s);
     }
   });
@@ -313,18 +391,36 @@ export function reconcileAppState(
     }
   });
   cloud.settlements.forEach(s => {
-    if (!deletedGroupSet.has(s.groupId) && validGroupIdSet.has(s.groupId)) {
+    if (
+      !deletedGroupSet.has(s.groupId) &&
+      validGroupIdSet.has(s.groupId) &&
+      !pendingSettlementSet.has(s.id)
+    ) {
       settlementMap.set(s.id, s);
     }
   });
 
-  // Calculate updated pendingGroupIds and pendingExpenseIds
+  // Calculate updated pendingGroupIds, pendingExpenseIds, and pendingSettlementIds
   const remainingPendingGroups = Array.from(groupMap.keys()).filter(
     id => !cloudGroupIdSet.has(id) && pendingGroupSet.has(id)
   );
-  const cloudExpenseIdSet = new Set(cloud.expenses.map(e => e.id));
-  const remainingPending = Array.from(expenseMap.keys()).filter(
-    id => !cloudExpenseIdSet.has(id)
+  const cloudExpenseById = new Map<string, Expense>(cloud.expenses.map(e => [e.id, e]));
+  const remainingPending = Array.from(expenseMap.keys()).filter(id => {
+    const cloudExp = cloudExpenseById.get(id);
+    if (!cloudExp) return true;
+    const localExp = expenseMap.get(id);
+    if (!localExp) return false;
+    // Keep in pending if local offline edit differs from cloud snapshot
+    return (
+      pendingExpenseSet.has(id) &&
+      (cloudExp.baseAmount !== localExp.baseAmount ||
+        cloudExp.title !== localExp.title ||
+        cloudExp.paidBy !== localExp.paidBy)
+    );
+  });
+  const cloudSettlementIdSet = new Set(cloud.settlements.map(s => s.id));
+  const remainingPendingSettlements = Array.from(settlementMap.keys()).filter(
+    id => !cloudSettlementIdSet.has(id) && pendingSettlementSet.has(id)
   );
 
   return {
@@ -337,6 +433,7 @@ export function reconcileAppState(
     settlements: Array.from(settlementMap.values()),
     pendingGroupIds: remainingPendingGroups,
     pendingExpenseIds: remainingPending,
+    pendingSettlementIds: remainingPendingSettlements,
   };
 }
 

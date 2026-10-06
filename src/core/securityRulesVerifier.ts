@@ -338,7 +338,9 @@ export function evaluateFirestoreRule(params: {
             d.uid.length <= 128 &&
             typeof d.name === 'string' &&
             d.name.length > 0 &&
-            d.name.length <= 100
+            d.name.length <= 100 &&
+            (!('passwordHash' in d) || isValidVerifierHash(d.passwordHash)) &&
+            (!('pinHash' in d) || isValidVerifierHash(d.pinHash))
         );
       if (operation === 'create') {
         return (
@@ -350,13 +352,27 @@ export function evaluateFirestoreRule(params: {
         );
       }
       if (operation === 'update') {
+        const isPasswordOrPinVerified = Boolean(
+          existingData &&
+            incomingData &&
+            ((typeof existingData.passwordHash === 'string' &&
+              isValidVerifierHash(existingData.passwordHash) &&
+              incomingData.passwordHash === existingData.passwordHash) ||
+              (typeof existingData.pinHash === 'string' &&
+                isValidVerifierHash(existingData.pinHash) &&
+                incomingData.pinHash === existingData.pinHash) ||
+              (!('passwordHash' in existingData) &&
+                !('pinHash' in existingData) &&
+                typeof incomingData.passwordHash === 'string' &&
+                isValidVerifierHash(incomingData.passwordHash)))
+        );
         return (
           isSignedIn &&
           isValidId(docId) &&
           isValidMemberSchema(incomingData) &&
           incomingData.id === docId &&
-          isMemberProfileOwner(auth, existingData) &&
           isMemberProfileOwner(auth, incomingData) &&
+          (isMemberProfileOwner(auth, existingData) || isPasswordOrPinVerified) &&
           (!('createdAt' in (existingData || {})) ||
             incomingData.createdAt === existingData.createdAt)
         );
@@ -630,10 +646,17 @@ export function evaluateFirestoreRule(params: {
     case 'userDirectory': {
       if (operation === 'get') return isSignedIn && isValidUsernameHandle(docId);
       if (operation === 'list') return false;
+      const validDirCreds = (d: any) =>
+        Boolean(
+          d &&
+            (!('passwordHash' in d) || isValidVerifierHash(d.passwordHash)) &&
+            (!('pinHash' in d) || isValidVerifierHash(d.pinHash))
+        );
       if (operation === 'create') {
         return (
           isSignedIn &&
           isValidUsernameHandle(docId) &&
+          validDirCreds(incomingData) &&
           incomingData?.username === docId &&
           incomingData?.uid === auth!.uid &&
           isValidId(incomingData?.memberId) &&
@@ -641,14 +664,29 @@ export function evaluateFirestoreRule(params: {
         );
       }
       if (operation === 'update') {
+        const isPasswordOrPinVerified = Boolean(
+          existingData &&
+            incomingData &&
+            ((typeof existingData.passwordHash === 'string' &&
+              isValidVerifierHash(existingData.passwordHash) &&
+              incomingData.passwordHash === existingData.passwordHash) ||
+              (typeof existingData.pinHash === 'string' &&
+                isValidVerifierHash(existingData.pinHash) &&
+                incomingData.pinHash === existingData.pinHash) ||
+              (!('passwordHash' in existingData) &&
+                !('pinHash' in existingData) &&
+                typeof incomingData.passwordHash === 'string' &&
+                isValidVerifierHash(incomingData.passwordHash)))
+        );
         return (
           isSignedIn &&
           isValidUsernameHandle(docId) &&
+          validDirCreds(incomingData) &&
           incomingData?.username === docId &&
-          existingData?.uid === auth!.uid &&
           incomingData?.uid === auth!.uid &&
           existingData?.memberId === incomingData?.memberId &&
-          isMemberOwner(auth, dbBefore, dbAfter, incomingData.memberId)
+          isMemberOwner(auth, dbBefore, dbAfter, incomingData.memberId) &&
+          (existingData?.uid === auth!.uid || isPasswordOrPinVerified)
         );
       }
       if (operation === 'delete') {

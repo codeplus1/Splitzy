@@ -2,6 +2,8 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getFirestore,
   initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   setLogLevel,
   collection,
   doc,
@@ -36,6 +38,12 @@ import {
 } from 'firebase/storage';
 import { firebaseConfig } from './firebaseConfig';
 import { validateReceiptFile } from '../core/receipt';
+import { hashAccountPassword } from '../core/security';
+import {
+  hashPin,
+  getStoredAppLockPinHash,
+  saveAppLockPin,
+} from '../components/AppLockScreen';
 import {
   Group,
   Member,
@@ -46,7 +54,13 @@ import {
   RecoveryRecord,
   UserSecurityProfile,
 } from '../types';
-import { AppState, loadAppState } from './storage';
+import {
+  AppState,
+  loadAppState,
+  saveLocalAccountCredential,
+  getLocalAccountCredential,
+  removeLocalAccountCredential,
+} from './storage';
 
 // Suppress internal @firebase/firestore transient connection retry logs so they don't trigger false error overlays
 try {
@@ -58,19 +72,33 @@ try {
 // Initialize Firebase App (idempotent singleton check)
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Initialize Firestore with the exact Database ID from firebaseConfig (firebase-applet-config.json)
+// Initialize Firestore with persistent IndexedDB offline cache + multi-tab sync
 let firestoreInstance: Firestore;
 try {
   firestoreInstance = initializeFirestore(
     app,
     {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      }),
       experimentalForceLongPolling: true,
       ignoreUndefinedProperties: true,
     },
     firebaseConfig.firestoreDatabaseId
   );
 } catch {
-  firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  try {
+    firestoreInstance = initializeFirestore(
+      app,
+      {
+        experimentalForceLongPolling: true,
+        ignoreUndefinedProperties: true,
+      },
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
 }
 
 export const db: Firestore = firestoreInstance;
@@ -339,6 +367,9 @@ let authInitPromise: Promise<User | null> | null = null;
 export async function ensureAuthUser(): Promise<User | null> {
   if (auth.currentUser) {
     return auth.currentUser;
+  }
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return null;
   }
   if (!authInitPromise) {
     authInitPromise = (async () => {
@@ -1016,17 +1047,46 @@ export function setActiveAccountUid(uid: string, displayName = 'User'): AppUser 
 /**
  * Registers or updates the current user's profile and unique @username in Firestore
  * (`members` and `userDirectory` collections). Verifies that the username is not already
- * claimed by a different user ID.
+ * claimed by a different account.
  */
 export async function cloudRegisterOrUpdateUserProfile(
   member: Member,
-  previousUsername?: string
+  previousUsername?: string,
+  isNewRegistration = false
 ): Promise<{
   success: boolean;
   error?: string;
   member?: Member;
   usernameTaken?: boolean;
 }> {
+  const cleanUsername = normalizeUsername(
+    member.username || generateDefaultUsername(member.name, member.uid)
+  );
+
+  if (cleanUsername.length < 2) {
+    return {
+      success: false,
+      error: 'Username ID must be at least 2 characters long.',
+    };
+  }
+
+  const localPinHash = getStoredAppLockPinHash() || undefined;
+  const localExistingCred = getLocalAccountCredential(cleanUsername);
+
+  // Check local credential registry first if registering a new account
+  if (
+    isNewRegistration &&
+    localExistingCred &&
+    localExistingCred.memberId &&
+    localExistingCred.memberId !== member.id
+  ) {
+    return {
+      success: false,
+      usernameTaken: true,
+      error: `Username "@${cleanUsername}" is already registered. Please log in with your password (or 4-digit App Lock PIN for existing users), or choose a different @username.`,
+    };
+  }
+
   try {
     const authUser = await ensureAuthUser();
     const effectiveUid =
@@ -1035,33 +1095,50 @@ export async function cloudRegisterOrUpdateUserProfile(
       member.uid ||
       getCachedUserIdentity().uid ||
       member.id;
-    const cleanUsername = normalizeUsername(
-      member.username || generateDefaultUsername(member.name, effectiveUid)
-    );
-
-    if (cleanUsername.length < 2) {
-      return {
-        success: false,
-        error: 'Username ID must be at least 2 characters long.',
-      };
-    }
 
     const updatedMember: Member = sanitizeForFirestore({
       ...member,
       username: cleanUsername,
       uid: effectiveUid,
+      passwordHash: member.passwordHash || localExistingCred?.passwordHash,
+      pinHash: member.pinHash || localPinHash || localExistingCred?.pinHash,
     });
+
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      saveLocalAccountCredential({
+        username: cleanUsername,
+        memberId: updatedMember.id,
+        uid: effectiveUid,
+        name: updatedMember.name,
+        avatar: updatedMember.avatar,
+        color: updatedMember.color || '#101D2D',
+        passwordHash: updatedMember.passwordHash,
+        pinHash: updatedMember.pinHash,
+        updatedAt: new Date().toISOString(),
+      });
+      return { success: true, member: updatedMember };
+    }
 
     const dirRef = doc(db, USER_DIRECTORY_COL, cleanUsername);
     const existingSnap = await getDoc(dirRef);
     if (existingSnap.exists()) {
       const data = existingSnap.data();
-      if (data.memberId !== member.id && data.uid !== effectiveUid) {
+      const isDifferentAccount =
+        isNewRegistration ||
+        (data.memberId !== member.id && data.uid !== effectiveUid);
+      if (isDifferentAccount) {
         return {
           success: false,
           usernameTaken: true,
-          error: `Username "@${cleanUsername}" is already taken. Please choose a different @username, or verify your 20-character Recovery Code if this is your account.`,
+          error: `Username "@${cleanUsername}" is already registered. Please log in with your password (or 4-digit App Lock PIN for existing users), or choose a different @username.`,
         };
+      }
+      // Preserve existing cloud passwordHash / pinHash if not explicitly provided
+      if (!updatedMember.passwordHash && data.passwordHash) {
+        updatedMember.passwordHash = data.passwordHash;
+      }
+      if (!updatedMember.pinHash && data.pinHash) {
+        updatedMember.pinHash = data.pinHash;
       }
     }
 
@@ -1070,10 +1147,13 @@ export async function cloudRegisterOrUpdateUserProfile(
       const cleanPrev = normalizeUsername(previousUsername);
       if (cleanPrev && cleanPrev !== cleanUsername) {
         batch.delete(doc(db, USER_DIRECTORY_COL, cleanPrev));
+        removeLocalAccountCredential(cleanPrev);
       }
     }
 
-    batch.set(doc(db, MEMBERS_COL, updatedMember.id), updatedMember, { merge: true });
+    batch.set(doc(db, MEMBERS_COL, updatedMember.id), sanitizeForFirestore(updatedMember), {
+      merge: true,
+    });
     batch.set(
       dirRef,
       sanitizeForFirestore({
@@ -1083,16 +1163,30 @@ export async function cloudRegisterOrUpdateUserProfile(
         name: updatedMember.name,
         avatar: updatedMember.avatar,
         color: updatedMember.color || '#101D2D',
+        passwordHash: updatedMember.passwordHash,
+        pinHash: updatedMember.pinHash,
         updatedAt: new Date().toISOString(),
       })
     );
 
     await batch.commit();
+
+    saveLocalAccountCredential({
+      username: cleanUsername,
+      memberId: updatedMember.id,
+      uid: effectiveUid,
+      name: updatedMember.name,
+      avatar: updatedMember.avatar,
+      color: updatedMember.color || '#101D2D',
+      passwordHash: updatedMember.passwordHash,
+      pinHash: updatedMember.pinHash,
+      updatedAt: new Date().toISOString(),
+    });
+
     return { success: true, member: updatedMember };
   } catch (err: any) {
     console.warn('cloudRegisterOrUpdateUserProfile notice:', err);
     const errMsg = err instanceof Error ? err.message : String(err);
-    const cleanUsername = normalizeUsername(member.username || '');
     if (
       err?.code === 'permission-denied' ||
       errMsg.toLowerCase().includes('missing or insufficient permissions')
@@ -1100,12 +1194,289 @@ export async function cloudRegisterOrUpdateUserProfile(
       return {
         success: false,
         usernameTaken: true,
-        error: `Username "@${cleanUsername}" is already taken. Please choose a different @username, or verify your 20-character Recovery Code if this is your account.`,
+        error: `Username "@${cleanUsername}" is already registered. Please log in with your password (or 4-digit App Lock PIN for existing users), or choose a different @username.`,
       };
     }
     return {
       success: false,
       error: errMsg,
+    };
+  }
+}
+
+/**
+ * Authenticates an existing @username account using either:
+ * 1. The user's Account Password (if `passwordHash` is already set on the account), OR
+ * 2. For already-registered users who do not have a password set yet: their 4-digit App Lock PIN
+ *    (which verifies their identity for now and then requires them to create a password for future logins).
+ */
+export async function cloudLoginWithUsernameAndPassword(
+  rawUsername: string,
+  secretInput: string
+): Promise<{
+  success: boolean;
+  requiresPasswordCreation?: boolean;
+  verifiedPinHash?: string;
+  member?: Member;
+  appUser?: AppUser;
+  error?: string;
+}> {
+  const cleanUsername = normalizeUsername(rawUsername);
+  if (!cleanUsername || cleanUsername.length < 2) {
+    return {
+      success: false,
+      error: 'Please enter a valid @username (at least 2 characters).',
+    };
+  }
+
+  const trimmedSecret = secretInput.trim();
+  if (!trimmedSecret) {
+    return {
+      success: false,
+      error: 'Please enter your password (or 4-digit App Lock PIN for existing accounts).',
+    };
+  }
+
+  try {
+    const authUser = await ensureAuthUser();
+    const currentAuthUid =
+      authUser?.uid || auth.currentUser?.uid || getCachedUserIdentity().uid;
+
+    let dirData: Record<string, any> | null = null;
+    if (typeof navigator === 'undefined' || navigator.onLine) {
+      try {
+        const dirSnap = await getDoc(doc(db, USER_DIRECTORY_COL, cleanUsername));
+        if (dirSnap.exists()) {
+          dirData = dirSnap.data();
+        }
+      } catch {
+        // Fallback to local credential cache
+      }
+    }
+
+    const localCred = getLocalAccountCredential(cleanUsername);
+    if (!dirData && !localCred) {
+      return {
+        success: false,
+        error: `No registered account found for "@${cleanUsername}". Please check your @username or create a new account.`,
+      };
+    }
+
+    const merged = {
+      ...(localCred || {}),
+      ...(dirData || {}),
+      passwordHash: dirData?.passwordHash || localCred?.passwordHash,
+      pinHash: dirData?.pinHash || localCred?.pinHash || getStoredAppLockPinHash(),
+    };
+
+    const memberId: string = merged.memberId || `m_owner_${cleanUsername}`;
+    const accountUid: string = currentAuthUid || merged.uid || `u_${cleanUsername}`;
+
+    const restoredMember: Member = {
+      id: memberId,
+      username: cleanUsername,
+      uid: accountUid,
+      name: merged.name || cleanUsername,
+      avatar: merged.avatar || '👨‍💻',
+      color: merged.color || '#101D2D',
+      passwordHash: merged.passwordHash,
+      pinHash: merged.pinHash || undefined,
+      createdAt: merged.updatedAt || new Date().toISOString(),
+    };
+
+    // CASE 1: Account already has a login password set -> verify passwordHash strictly
+    if (merged.passwordHash) {
+      const candidatePasswordHash = await hashAccountPassword(trimmedSecret);
+      if (candidatePasswordHash !== merged.passwordHash) {
+        return {
+          success: false,
+          error: `Incorrect password for "@${cleanUsername}". Please try again.`,
+        };
+      }
+
+      // Password verified! Sync active UID & member record
+      const appUser = setActiveAccountUid(accountUid, restoredMember.name);
+      saveLocalAccountCredential({
+        username: cleanUsername,
+        memberId: restoredMember.id,
+        uid: accountUid,
+        name: restoredMember.name,
+        avatar: restoredMember.avatar,
+        color: restoredMember.color || '#101D2D',
+        passwordHash: merged.passwordHash,
+        pinHash: restoredMember.pinHash,
+        updatedAt: new Date().toISOString(),
+      });
+
+      if (typeof navigator === 'undefined' || navigator.onLine) {
+        try {
+          const batch = writeBatch(db);
+          batch.set(
+            doc(db, USER_DIRECTORY_COL, cleanUsername),
+            sanitizeForFirestore({
+              username: cleanUsername,
+              memberId: restoredMember.id,
+              uid: accountUid,
+              name: restoredMember.name,
+              avatar: restoredMember.avatar,
+              color: restoredMember.color || '#101D2D',
+              passwordHash: merged.passwordHash,
+              pinHash: restoredMember.pinHash,
+              updatedAt: new Date().toISOString(),
+            })
+          );
+          batch.set(
+            doc(db, MEMBERS_COL, restoredMember.id),
+            sanitizeForFirestore(restoredMember),
+            { merge: true }
+          );
+          await batch.commit();
+        } catch {
+          // Ignore if offline or cross-session rule check
+        }
+      }
+
+      return {
+        success: true,
+        member: restoredMember,
+        appUser,
+      };
+    }
+
+    // CASE 2: Already registered user who does NOT have a password set yet ->
+    // Allow them to use their 4-digit App Lock PIN for now, then require creating a password for login!
+    if (!/^\d{4}$/.test(trimmedSecret)) {
+      return {
+        success: false,
+        error: `Account "@${cleanUsername}" does not have a password set yet. Please enter your 4-digit App Lock PIN for now — you will then create a password for login.`,
+      };
+    }
+
+    const candidatePinHash = await hashPin(trimmedSecret);
+    if (merged.pinHash && merged.pinHash.length === 64 && candidatePinHash !== merged.pinHash) {
+      return {
+        success: false,
+        error: `Incorrect 4-digit App Lock PIN for "@${cleanUsername}". Please try again.`,
+      };
+    }
+
+    // Save the verified PIN locally and prompt user to create their login password now
+    await saveAppLockPin(trimmedSecret);
+
+    return {
+      success: false,
+      requiresPasswordCreation: true,
+      verifiedPinHash: candidatePinHash,
+      member: {
+        ...restoredMember,
+        pinHash: candidatePinHash,
+      },
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to verify login credentials.',
+    };
+  }
+}
+
+/**
+ * Completes the login flow for an already-registered user who authenticated with their
+ * 4-digit App Lock PIN and now creates their permanent account login password.
+ */
+export async function cloudCompletePinLoginWithNewPassword(
+  rawUsername: string,
+  newPassword: string,
+  verifiedPinHash?: string,
+  pendingMember?: Member
+): Promise<{
+  success: boolean;
+  member?: Member;
+  appUser?: AppUser;
+  error?: string;
+}> {
+  const cleanUsername = normalizeUsername(rawUsername);
+  const trimmedPassword = newPassword.trim();
+  if (trimmedPassword.length < 4) {
+    return {
+      success: false,
+      error: 'Password must be at least 4 characters long.',
+    };
+  }
+
+  try {
+    const authUser = await ensureAuthUser();
+    const passwordHash = await hashAccountPassword(trimmedPassword);
+    const pinHash = verifiedPinHash || getStoredAppLockPinHash() || undefined;
+    const accountUid =
+      authUser?.uid ||
+      auth.currentUser?.uid ||
+      pendingMember?.uid ||
+      getCachedUserIdentity().uid;
+    const memberId = pendingMember?.id || `m_owner_${cleanUsername}`;
+
+    const updatedMember: Member = sanitizeForFirestore({
+      id: memberId,
+      username: cleanUsername,
+      uid: accountUid,
+      name: pendingMember?.name || cleanUsername,
+      avatar: pendingMember?.avatar || '👨‍💻',
+      color: pendingMember?.color || '#101D2D',
+      passwordHash,
+      pinHash,
+      createdAt: pendingMember?.createdAt || new Date().toISOString(),
+    });
+
+    saveLocalAccountCredential({
+      username: cleanUsername,
+      memberId: updatedMember.id,
+      uid: accountUid,
+      name: updatedMember.name,
+      avatar: updatedMember.avatar,
+      color: updatedMember.color || '#101D2D',
+      passwordHash,
+      pinHash,
+      updatedAt: new Date().toISOString(),
+    });
+
+    if (typeof navigator === 'undefined' || navigator.onLine) {
+      try {
+        const batch = writeBatch(db);
+        batch.set(
+          doc(db, USER_DIRECTORY_COL, cleanUsername),
+          sanitizeForFirestore({
+            username: cleanUsername,
+            memberId: updatedMember.id,
+            uid: accountUid,
+            name: updatedMember.name,
+            avatar: updatedMember.avatar,
+            color: updatedMember.color || '#101D2D',
+            passwordHash,
+            pinHash,
+            updatedAt: new Date().toISOString(),
+          })
+        );
+        batch.set(
+          doc(db, MEMBERS_COL, updatedMember.id),
+          sanitizeForFirestore(updatedMember),
+          { merge: true }
+        );
+        await batch.commit();
+      } catch (err) {
+        console.warn('Cloud password save notice:', err);
+      }
+    }
+
+    const appUser = setActiveAccountUid(accountUid, updatedMember.name);
+    return {
+      success: true,
+      member: updatedMember,
+      appUser,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Failed to save new password.',
     };
   }
 }
@@ -1178,6 +1549,8 @@ export async function cloudVerifyAndAccessExistingAccount(
       name: d.name || cleanUsername,
       avatar: d.avatar || '👨‍💻',
       color: d.color || '#101D2D',
+      passwordHash: d.passwordHash,
+      pinHash: d.pinHash,
       createdAt: d.updatedAt || new Date().toISOString(),
     };
 
@@ -1213,43 +1586,18 @@ export async function cloudVerifyAndAccessExistingAccount(
 }
 
 /**
- * Signs out the current user session on this device without deleting any cloud records.
- * Allows the user to log out and either create a new profile or restore an account via Recovery Code / Backup.
+ * Signs out the current user profile on this device without deleting any cloud records.
+ * Keeps the underlying Firebase Auth token intact so when the user logs back in with their
+ * password (or App Lock PIN), their cloud groups and expenses immediately re-sync.
  */
 export async function cloudLogoutUserSession(): Promise<{ success: boolean; newUser: AppUser }> {
-  try {
-    if (auth.currentUser) {
-      await auth.signOut();
-    }
-  } catch (err) {
-    console.warn('Sign out notice:', err);
-  }
-
-  try {
-    localStorage.removeItem(AUTHORITATIVE_AUTH_UID_KEY);
-    localStorage.removeItem(LOCAL_USER_KEY);
-  } catch {
-    // Ignore storage issues
-  }
-
-  try {
-    const cred = await signInAnonymously(auth);
-    if (cred?.user) {
-      const appUser: AppUser = {
-        uid: cred.user.uid,
-        isAnonymous: true,
-        displayName: 'User',
-      };
-      try {
-        localStorage.setItem(AUTHORITATIVE_AUTH_UID_KEY, appUser.uid);
-        localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(appUser));
-      } catch {
-        // Ignore
-      }
-      return { success: true, newUser: appUser };
-    }
-  } catch {
-    // Fallback to fresh local identity
+  if (auth.currentUser) {
+    const appUser: AppUser = {
+      uid: auth.currentUser.uid,
+      isAnonymous: auth.currentUser.isAnonymous,
+      displayName: 'User',
+    };
+    return { success: true, newUser: appUser };
   }
 
   return { success: true, newUser: getCachedUserIdentity() };
@@ -1314,6 +1662,7 @@ export async function cloudDeleteUserAccount(params: {
     if (params.member?.username) {
       const cleanUsername = normalizeUsername(params.member.username);
       if (cleanUsername) {
+        removeLocalAccountCredential(cleanUsername);
         try {
           await deleteDoc(doc(db, USER_DIRECTORY_COL, cleanUsername));
         } catch (err) {
@@ -1578,20 +1927,27 @@ export async function cloudSaveExpense(
         batch.set(doc(db, EXPENSE_SHARES_COL, share.id), share);
       }
 
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        // Queue atomic batch in Firestore IndexedDB persistent cache; return false so pendingExpenseIds tracks it until online confirmation
+        batch.commit().catch(() => {});
+        return false;
+      }
+
       await batch.commit();
+      return true;
     };
 
     try {
-      await commitExpenseBatch(false);
+      const committedOnline = await commitExpenseBatch(false);
+      return { success: committedOnline };
     } catch (firstErr) {
       if (parentGroup && realAuthUid) {
-        await commitExpenseBatch(true);
+        const committedOnline = await commitExpenseBatch(true);
+        return { success: committedOnline };
       } else {
         throw firstErr;
       }
     }
-
-    return { success: true };
   } catch (err) {
     console.warn('Cloud expense sync note:', err);
     return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -1630,7 +1986,13 @@ export async function cloudSaveSettlement(
 ): Promise<{ success: boolean; error?: string }> {
   try {
     await ensureAuthUser();
-    await setDoc(doc(db, SETTLEMENTS_COL, settlement.id), sanitizeForFirestore(settlement));
+    const ref = doc(db, SETTLEMENTS_COL, settlement.id);
+    const data = sanitizeForFirestore(settlement);
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setDoc(ref, data, { merge: true }).catch(() => {});
+      return { success: false, error: 'Offline: queued for sync when online.' };
+    }
+    await setDoc(ref, data);
     return { success: true };
   } catch (err) {
     console.error('Failed to save settlement in Firestore:', err);
@@ -1720,6 +2082,10 @@ export async function cloudUploadFullState(
       const cleanProfileUsername = normalizeUsername(
         state.userProfile.username || generateDefaultUsername(state.userProfile.name, realAuthUid)
       );
+      const storedCred = cleanProfileUsername ? getLocalAccountCredential(cleanProfileUsername) : null;
+      const resolvedPasswordHash = state.userProfile.passwordHash || storedCred?.passwordHash;
+      const resolvedPinHash =
+        state.userProfile.pinHash || storedCred?.pinHash || getStoredAppLockPinHash() || undefined;
       pendingWrites.push({
         col: MEMBERS_COL,
         id: state.userProfile.id,
@@ -1729,6 +2095,12 @@ export async function cloudUploadFullState(
           uid: realAuthUid,
           groupId: state.userProfile.groupId || primaryGroupId,
           memberUserIds: Array.from(allCoMemberUids),
+          ...(resolvedPasswordHash && isValidVerifierHash(resolvedPasswordHash)
+            ? { passwordHash: resolvedPasswordHash }
+            : {}),
+          ...(resolvedPinHash && isValidVerifierHash(resolvedPinHash)
+            ? { pinHash: resolvedPinHash }
+            : {}),
         }),
       });
       if (cleanProfileUsername.length >= 2) {
@@ -1743,6 +2115,12 @@ export async function cloudUploadFullState(
             avatar: state.userProfile.avatar,
             color: state.userProfile.color || '#101D2D',
             updatedAt: new Date().toISOString(),
+            ...(resolvedPasswordHash && isValidVerifierHash(resolvedPasswordHash)
+              ? { passwordHash: resolvedPasswordHash }
+              : {}),
+            ...(resolvedPinHash && isValidVerifierHash(resolvedPinHash)
+              ? { pinHash: resolvedPinHash }
+              : {}),
           }),
         });
       }

@@ -12,6 +12,8 @@ export interface Member {
   avatar: string; // Emoji, initials, or uploaded photo dataURL
   color?: string; // Hex or tailwind color class
   paymentInfo?: string; // Interac e-Transfer email, UPI ID, Bank ID, PayPal handle
+  passwordHash?: string; // Salted SHA-256 hex digest of user's account login password
+  pinHash?: string; // Salted SHA-256 hex digest of user's 4-digit App Lock PIN
   createdAt: string;
 }
 

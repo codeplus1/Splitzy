@@ -34,6 +34,8 @@ import {
   generateInviteCode,
   generateGuaranteedUniqueInviteCode,
   cloudRegisterOrUpdateUserProfile,
+  cloudLoginWithUsernameAndPassword,
+  cloudCompletePinLoginWithNewPassword,
   cloudLogoutUserSession,
   cloudDeleteUserAccount,
   generateDefaultUsername,
@@ -368,12 +370,33 @@ export default function App() {
   // Automatically flush any pending offline changes when network connection is restored
   useEffect(() => {
     const handleOnlineRecovery = () => {
-      if (currentUser && (appState.groups.length > 0 || (appState.pendingExpenseIds?.length || 0) > 0)) {
+      if (
+        currentUser &&
+        (appState.groups.length > 0 ||
+          (appState.pendingExpenseIds?.length || 0) > 0 ||
+          (appState.pendingSettlementIds?.length || 0) > 0 ||
+          (appState.pendingGroupIds?.length || 0) > 0)
+      ) {
+        const hadPendingCount =
+          (appState.pendingExpenseIds?.length || 0) +
+          (appState.pendingSettlementIds?.length || 0) +
+          (appState.pendingGroupIds?.length || 0);
         setSyncStatus('syncing');
         cloudUploadFullState(appState, currentUser).then(res => {
           if (res.success) {
             setSyncStatus('connected');
-            setAppState(prev => ({ ...prev, pendingExpenseIds: [] }));
+            setAppState(prev => ({
+              ...prev,
+              pendingGroupIds: [],
+              pendingExpenseIds: [],
+              pendingSettlementIds: [],
+            }));
+            if (hadPendingCount > 0) {
+              showToast(
+                'Online! All offline expenses & changes synced to group members’ phones.',
+                'success'
+              );
+            }
           }
         });
       }
@@ -471,8 +494,9 @@ export default function App() {
       };
     });
 
-    // Automatically sync to Firebase Firestore Cloud Database
-    setSyncStatus('saving');
+    // Automatically sync to Firebase Firestore Cloud Database (or queue offline when there is no signal)
+    const isCurrentlyOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+    setSyncStatus(isCurrentlyOffline ? 'offline' : 'saving');
     const targetGroup =
       appState.groups.find(g => g.id === newExpense.groupId) || currentGroup;
     cloudSaveExpense(newExpense, newShares, oldShareIds, targetGroup).then(async res => {
@@ -484,9 +508,15 @@ export default function App() {
         }));
         showToast(
           isExisting
-            ? 'Expense updated & synced to cloud!'
-            : 'Expense added & automatically synced to cloud!',
+            ? 'Expense updated & synced to group phones!'
+            : 'Expense added & synced to group phones!',
           'success'
+        );
+      } else if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setSyncStatus('offline');
+        showToast(
+          'Saved offline with no signal! Will sync to group members’ phones automatically when online.',
+          'info'
         );
       } else {
         console.warn('Expense auto-sync note:', res.error);
@@ -509,8 +539,11 @@ export default function App() {
         } catch (healErr) {
           console.error('Auto-heal error:', healErr);
         }
-        setSyncStatus('error');
-        showToast('Saved locally. Auto-sync will retry automatically.', 'info');
+        setSyncStatus(typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'error');
+        showToast(
+          'Saved on your phone! Will sync to group members automatically when online.',
+          'info'
+        );
       }
     });
 
@@ -541,16 +574,17 @@ export default function App() {
     name: string,
     username: string,
     avatar: string,
-    color: string
+    color: string,
+    password?: string
   ): Promise<{ success: boolean; error?: string; usernameTaken?: boolean }> => {
     const existingMember =
       appState.members.find(m => m.id === appState.currentUserId) ||
       appState.userProfile;
 
-    const memberId = existingMember?.id || `m_owner_${Date.now()}`;
     const cleanUsername = normalizeUsername(
       username || generateDefaultUsername(name, currentUser?.uid)
     );
+    const memberId = existingMember?.id || `m_owner_${cleanUsername || Date.now()}`;
 
     const candidateMember: Member = {
       id: memberId,
@@ -559,13 +593,16 @@ export default function App() {
       name: name.trim(),
       avatar,
       color,
+      passwordHash: existingMember?.passwordHash,
+      pinHash: existingMember?.pinHash,
       createdAt: existingMember?.createdAt || new Date().toISOString(),
     };
 
-    // Register & verify unique @username in Firestore userDirectory
+    // Register & verify unique @username + password in Firestore userDirectory
     const regResult = await cloudRegisterOrUpdateUserProfile(
       candidateMember,
-      existingMember?.username
+      existingMember?.username,
+      password
     );
     if (!regResult.success) {
       return {
@@ -639,6 +676,88 @@ export default function App() {
 
     setIsEditProfileOpen(false);
     showToast(`Profile saved as @${updatedMember.username}!`, 'success');
+    return { success: true };
+  };
+
+  // Account Login with @username + Password (or App Lock PIN for already-registered users)
+  const handleLoginAccount = async (
+    username: string,
+    passwordOrPin: string
+  ): Promise<{
+    success: boolean;
+    requiresPasswordCreation?: boolean;
+    verifiedPinHash?: string;
+    pendingMember?: Member;
+    error?: string;
+  }> => {
+    const res = await cloudLoginWithUsernameAndPassword(username, passwordOrPin);
+    if (!res.success) {
+      return { success: false, error: res.error };
+    }
+
+    if (res.requiresPasswordCreation && res.verifiedPinHash) {
+      return {
+        success: true,
+        requiresPasswordCreation: true,
+        verifiedPinHash: res.verifiedPinHash,
+        pendingMember: res.member,
+      };
+    }
+
+    if (res.member) {
+      const loggedInMember = res.member;
+      if (res.appUser) {
+        setCurrentUser(res.appUser);
+      }
+      setAppState(prev => ({
+        ...prev,
+        userProfile: loggedInMember,
+        currentUserId: loggedInMember.id,
+        members: prev.members.some(m => m.id === loggedInMember.id)
+          ? prev.members.map(m => (m.id === loggedInMember.id ? loggedInMember : m))
+          : [loggedInMember, ...prev.members],
+      }));
+      setIsEditProfileOpen(false);
+      showToast(`Welcome back, @${loggedInMember.username}!`, 'success');
+    }
+
+    return { success: true };
+  };
+
+  // Complete mandatory password creation after an existing user logs in with their App Lock PIN
+  const handleCompletePinPasswordSetup = async (
+    username: string,
+    newPassword: string,
+    verifiedPinHash: string,
+    pendingMember?: Member
+  ): Promise<{ success: boolean; error?: string }> => {
+    const res = await cloudCompletePinLoginWithNewPassword(
+      username,
+      newPassword,
+      verifiedPinHash,
+      pendingMember
+    );
+    if (!res.success || !res.member) {
+      return { success: false, error: res.error || 'Could not save password.' };
+    }
+
+    const loggedInMember = res.member;
+    if (res.appUser) {
+      setCurrentUser(res.appUser);
+    }
+    setAppState(prev => ({
+      ...prev,
+      userProfile: loggedInMember,
+      currentUserId: loggedInMember.id,
+      members: prev.members.some(m => m.id === loggedInMember.id)
+        ? prev.members.map(m => (m.id === loggedInMember.id ? loggedInMember : m))
+        : [loggedInMember, ...prev.members],
+    }));
+    setIsEditProfileOpen(false);
+    showToast(
+      `Password created & logged in as @${loggedInMember.username}!`,
+      'success'
+    );
     return { success: true };
   };
 
@@ -844,11 +963,28 @@ export default function App() {
     setAppState(prev => ({
       ...prev,
       settlements: [record, ...prev.settlements],
+      pendingSettlementIds: Array.from(
+        new Set([...(prev.pendingSettlementIds || []), record.id])
+      ),
     }));
 
-    // Sync settlement to Cloud Firestore
-    cloudSaveSettlement(record);
-    showToast('Settlement recorded! Balances recalculated.', 'success');
+    // Sync settlement to Cloud Firestore (or queue offline when no signal)
+    cloudSaveSettlement(record).then(res => {
+      if (res.success) {
+        setAppState(prev => ({
+          ...prev,
+          pendingSettlementIds: (prev.pendingSettlementIds || []).filter(
+            id => id !== record.id
+          ),
+        }));
+        showToast('Settlement recorded & synced to group phones!', 'success');
+      } else {
+        showToast(
+          'Settlement recorded offline! Will sync to group phones when online.',
+          'info'
+        );
+      }
+    });
   };
 
   // Add Verified Registered Member to Group (Restricted to Group Owner)
@@ -1016,11 +1152,22 @@ export default function App() {
   const handleManualSync = async () => {
     setSyncStatus('syncing');
     try {
-      await cloudUploadFullState(appState, currentUser);
-      setSyncStatus('connected');
-      showToast('Synced all data with Firestore cloud database!', 'success');
+      const res = await cloudUploadFullState(appState, currentUser);
+      if (res.success) {
+        setSyncStatus('connected');
+        setAppState(prev => ({
+          ...prev,
+          pendingGroupIds: [],
+          pendingExpenseIds: [],
+          pendingSettlementIds: [],
+        }));
+        showToast('Synced all data with group members’ phones!', 'success');
+      } else {
+        setSyncStatus(typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'error');
+        showToast('Queued locally — will sync when online.', 'info');
+      }
     } catch {
-      setSyncStatus('error');
+      setSyncStatus(typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'error');
       showToast('Cloud synchronization failed.', 'error');
     }
   };
@@ -1184,6 +1331,7 @@ export default function App() {
             expenses={appState.expenses}
             expenseShares={appState.expenseShares}
             settlements={appState.settlements}
+            pendingExpenseIds={appState.pendingExpenseIds || []}
             currentUserId={appState.currentUserId}
             onBackToDashboard={() => setActiveGroupId(null)}
             onAddExpenseClick={() => {
@@ -1235,8 +1383,11 @@ export default function App() {
         }
         initialAvatar={currentUserMember?.avatar || '👨‍💻'}
         initialColor={currentUserMember?.color || '#101D2D'}
+        hasPassword={Boolean(currentUserMember?.passwordHash)}
         isEditing={!needsOnboarding && isEditProfileOpen}
         onSaveUser={handleSaveUserProfile}
+        onLoginAccount={handleLoginAccount}
+        onCompletePinPasswordSetup={handleCompletePinPasswordSetup}
         onOpenRecoveryCenter={() => setIsSecurityCenterOpen(true)}
         onLogoutAccount={handleLogoutAccount}
         onDeleteAccount={handleDeleteAccount}
@@ -1371,7 +1522,14 @@ export default function App() {
       </Suspense>
 
       {/* Offline Connectivity Indicator */}
-      <OfflineIndicator />
+      <OfflineIndicator
+        pendingCount={
+          (appState.pendingExpenseIds?.length || 0) +
+          (appState.pendingSettlementIds?.length || 0) +
+          (appState.pendingGroupIds?.length || 0)
+        }
+        onSyncNow={handleManualSync}
+      />
 
       {/* Splitze Branded Footer */}
       <footer className="max-w-5xl w-full mx-auto px-4 sm:px-6 py-6 border-t border-[var(--border)] flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-[var(--ink-muted)]">

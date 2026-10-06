@@ -44,6 +44,7 @@ interface GroupDetailProps {
   expenses: Expense[];
   expenseShares: ExpenseShare[];
   settlements: SettlementRecord[];
+  pendingExpenseIds?: string[];
   onBackToDashboard: () => void;
   onAddExpenseClick: () => void;
   onEditExpenseClick: (expense: Expense, shares: ExpenseShare[]) => void;
@@ -65,6 +66,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
   expenses,
   expenseShares,
   settlements,
+  pendingExpenseIds = [],
   currentUserId,
   onBackToDashboard,
   onAddExpenseClick,
@@ -534,6 +536,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                   members={members}
                   groupShares={groupShares}
                   language={language}
+                  isPendingSync={pendingExpenseIds.includes(expense.id)}
                   onEdit={onEditExpenseClick}
                   onDelete={onDeleteExpense}
                 />

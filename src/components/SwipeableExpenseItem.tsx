@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, useMotionValue, useTransform } from 'motion/react';
-import { Edit2, Trash2, Calendar, FileImage } from 'lucide-react';
+import { Edit2, Trash2, Calendar, FileImage, CloudOff } from 'lucide-react';
 import { Expense, Group, Member, ExpenseShare, SupportedLanguage } from '../types';
 import { MemberAvatar } from './MemberAvatar';
 import { ReceiptViewerModal } from './ReceiptViewerModal';
@@ -14,6 +14,7 @@ interface SwipeableExpenseItemProps {
   members: Member[];
   groupShares: ExpenseShare[];
   language: SupportedLanguage;
+  isPendingSync?: boolean;
   onEdit: (expense: Expense, shares: ExpenseShare[]) => void;
   onDelete?: (expenseId: string) => void;
 }
@@ -24,6 +25,7 @@ export const SwipeableExpenseItem: React.FC<SwipeableExpenseItemProps> = ({
   members,
   groupShares,
   language,
+  isPendingSync = false,
   onEdit,
   onDelete,
 }) => {
@@ -103,6 +105,15 @@ export const SwipeableExpenseItem: React.FC<SwipeableExpenseItemProps> = ({
               {expense.category && (
                 <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-[var(--surface-subtle)] text-[var(--ink-secondary)] border border-[var(--border-subtle)]">
                   {expense.category}
+                </span>
+              )}
+              {isPendingSync && (
+                <span
+                  className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-100/90 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800"
+                  title="Saved on your phone with no signal — will sync automatically to group members' phones when online"
+                >
+                  <CloudOff className="w-2.5 h-2.5 shrink-0" />
+                  <span>Queued Offline · Syncs when online</span>
                 </span>
               )}
               {expense.receiptUrl && (

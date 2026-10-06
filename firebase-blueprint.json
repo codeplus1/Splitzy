@@ -36,6 +36,8 @@
         "name": { "type": "string" },
         "avatar": { "type": "string" },
         "color": { "type": "string" },
+        "passwordHash": { "type": "string" },
+        "pinHash": { "type": "string" },
         "createdAt": { "type": "string" }
       },
       "required": ["id", "uid", "name"]
@@ -51,6 +53,8 @@
         "name": { "type": "string" },
         "avatar": { "type": "string" },
         "color": { "type": "string" },
+        "passwordHash": { "type": "string" },
+        "pinHash": { "type": "string" },
         "updatedAt": { "type": "string" }
       },
       "required": ["username", "memberId", "uid", "name"]

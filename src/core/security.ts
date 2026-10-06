@@ -59,6 +59,31 @@ export async function hashRecoveryCode(code: string): Promise<string> {
   return bufferToHex(hashBuffer);
 }
 
+/**
+ * Computes a deterministic salted 64-character SHA-256 hex hash of an account password.
+ * Raw passwords are NEVER stored in Firestore or localStorage.
+ */
+export async function hashAccountPassword(password: string): Promise<string> {
+  const clean = password.trim();
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(`SPLITZY_ACCOUNT_PWD_SALT_V1:${clean}`);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    return bufferToHex(hashBuffer);
+  }
+  const salted = `SPLITZY_ACCOUNT_PWD_SALT_V1:${clean}`;
+  let out = '';
+  for (let round = 0; round < 8; round++) {
+    let h = (2166136261 ^ round) >>> 0;
+    for (let i = 0; i < salted.length; i++) {
+      h ^= salted.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    out += (h >>> 0).toString(16).padStart(8, '0');
+  }
+  return out.slice(0, 64);
+}
+
 /* ==========================================================================
    2. ENCRYPTED BACKUP UTILITIES (AES-GCM 256-bit + PBKDF2)
    ========================================================================== */
