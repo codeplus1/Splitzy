@@ -112,8 +112,11 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   const [isDeleting, setIsDeleting] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
+  const wasOpenRef = useRef(false);
+
   React.useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !wasOpenRef.current) {
+      wasOpenRef.current = true;
       setAuthTab('register');
       setName(initialName);
       setUsername(initialUsername);
@@ -132,6 +135,8 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
       setIsLoggingOut(false);
       setShowDeleteConfirm(false);
       setIsDeleting(false);
+    } else if (!isOpen) {
+      wasOpenRef.current = false;
     }
   }, [isOpen, initialName, initialUsername, initialAvatar, initialColor]);
 

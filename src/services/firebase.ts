@@ -1052,6 +1052,7 @@ export function setActiveAccountUid(uid: string, displayName = 'User'): AppUser 
 export async function cloudRegisterOrUpdateUserProfile(
   member: Member,
   previousUsername?: string,
+  rawPassword?: string,
   isNewRegistration = false
 ): Promise<{
   success: boolean;
@@ -1072,6 +1073,10 @@ export async function cloudRegisterOrUpdateUserProfile(
 
   const localPinHash = getStoredAppLockPinHash() || undefined;
   const localExistingCred = getLocalAccountCredential(cleanUsername);
+  const computedPasswordHash =
+    rawPassword && rawPassword.trim().length >= 4
+      ? await hashAccountPassword(rawPassword.trim())
+      : undefined;
 
   // Check local credential registry first if registering a new account
   if (
@@ -1100,7 +1105,8 @@ export async function cloudRegisterOrUpdateUserProfile(
       ...member,
       username: cleanUsername,
       uid: effectiveUid,
-      passwordHash: member.passwordHash || localExistingCred?.passwordHash,
+      passwordHash:
+        computedPasswordHash || member.passwordHash || localExistingCred?.passwordHash,
       pinHash: member.pinHash || localPinHash || localExistingCred?.pinHash,
     });
 
@@ -1284,17 +1290,12 @@ export async function cloudLoginWithUsernameAndPassword(
       createdAt: merged.updatedAt || new Date().toISOString(),
     };
 
-    // CASE 1: Account already has a login password set -> verify passwordHash strictly
-    if (merged.passwordHash) {
-      const candidatePasswordHash = await hashAccountPassword(trimmedSecret);
-      if (candidatePasswordHash !== merged.passwordHash) {
-        return {
-          success: false,
-          error: `Incorrect password for "@${cleanUsername}". Please try again.`,
-        };
-      }
+    const candidatePasswordHash = await hashAccountPassword(trimmedSecret);
+    const isFourDigitInput = /^\d{4}$/.test(trimmedSecret);
+    const candidatePinHash = isFourDigitInput ? await hashPin(trimmedSecret) : '';
 
-      // Password verified! Sync active UID & member record
+    // 1. Check if input matches the stored Account Password hash
+    if (merged.passwordHash && candidatePasswordHash === merged.passwordHash) {
       const appUser = setActiveAccountUid(accountUid, restoredMember.name);
       saveLocalAccountCredential({
         username: cleanUsername,
@@ -1343,34 +1344,54 @@ export async function cloudLoginWithUsernameAndPassword(
       };
     }
 
-    // CASE 2: Already registered user who does NOT have a password set yet ->
-    // Allow them to use their 4-digit App Lock PIN for now, then require creating a password for login!
-    if (!/^\d{4}$/.test(trimmedSecret)) {
+    // 2. If account already has a passwordHash and the input did NOT match it:
+    if (merged.passwordHash) {
       return {
         success: false,
-        error: `Account "@${cleanUsername}" does not have a password set yet. Please enter your 4-digit App Lock PIN for now — you will then create a password for login.`,
+        error: `Incorrect password for "@${cleanUsername}". Please try again.`,
       };
     }
 
-    const candidatePinHash = await hashPin(trimmedSecret);
-    if (merged.pinHash && merged.pinHash.length === 64 && candidatePinHash !== merged.pinHash) {
+    // 3. Account does NOT have a passwordHash yet (registered before passwords were added):
+    //    - If the user entered a 4-digit App Lock PIN, verify it against their stored pinHash (if any)
+    //      and then prompt them to create a permanent password for future logins.
+    if (isFourDigitInput) {
+      if (merged.pinHash && merged.pinHash.length === 64 && candidatePinHash !== merged.pinHash) {
+        return {
+          success: false,
+          error: `Incorrect 4-digit App Lock PIN for "@${cleanUsername}". Please try again.`,
+        };
+      }
+
+      // Save the verified PIN locally and prompt user to create their login password now
+      await saveAppLockPin(trimmedSecret);
+
       return {
-        success: false,
-        error: `Incorrect 4-digit App Lock PIN for "@${cleanUsername}". Please try again.`,
+        success: true,
+        requiresPasswordCreation: true,
+        verifiedPinHash: candidatePinHash,
+        member: {
+          ...restoredMember,
+          pinHash: candidatePinHash,
+        },
       };
     }
 
-    // Save the verified PIN locally and prompt user to create their login password now
-    await saveAppLockPin(trimmedSecret);
+    // 4. If the existing account has neither passwordHash nor pinHash in the cloud and the user
+    //    entered a password (>= 4 chars), set this password on their account and log them in!
+    if (!merged.pinHash && trimmedSecret.length >= 4) {
+      const completed = await cloudCompletePinLoginWithNewPassword(
+        cleanUsername,
+        trimmedSecret,
+        undefined,
+        restoredMember
+      );
+      return completed;
+    }
 
     return {
       success: false,
-      requiresPasswordCreation: true,
-      verifiedPinHash: candidatePinHash,
-      member: {
-        ...restoredMember,
-        pinHash: candidatePinHash,
-      },
+      error: `Account "@${cleanUsername}" does not have a password set yet. Please enter your 4-digit App Lock PIN for now — you will then create a password for login.`,
     };
   } catch (err) {
     return {

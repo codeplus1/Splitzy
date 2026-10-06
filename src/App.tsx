@@ -599,10 +599,12 @@ export default function App() {
     };
 
     // Register & verify unique @username + password in Firestore userDirectory
+    const isNewRegistration = !existingMember?.username;
     const regResult = await cloudRegisterOrUpdateUserProfile(
       candidateMember,
       existingMember?.username,
-      password
+      password,
+      isNewRegistration
     );
     if (!regResult.success) {
       return {
