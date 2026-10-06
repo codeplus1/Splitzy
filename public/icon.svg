@@ -1,67 +1,49 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <linearGradient id="splitzeBg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#152436" />
-      <stop offset="50%" stop-color="#101D2D" />
-      <stop offset="100%" stop-color="#0B1420" />
+    <clipPath id="splitzeCircleClip">
+      <circle cx="256" cy="256" r="240" />
+    </clipPath>
+    <linearGradient id="tealGrad" x1="60" y1="40" x2="360" y2="280" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#05B2DC" />
+      <stop offset="100%" stop-color="#0093B5" />
     </linearGradient>
-    <radialGradient id="mintGlow" cx="76%" cy="20%" r="55%">
-      <stop offset="0%" stop-color="#63E6BE" stop-opacity="0.25" />
-      <stop offset="100%" stop-color="#63E6BE" stop-opacity="0" />
-    </radialGradient>
+    <linearGradient id="navyGrad" x1="160" y1="220" x2="450" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#132D54" />
+      <stop offset="100%" stop-color="#0B1D3A" />
+    </linearGradient>
+    <linearGradient id="checkFoldGrad" x1="276" y1="215" x2="355" y2="295" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#CFD6DF" />
+      <stop offset="65%" stop-color="#F1F4F8" />
+      <stop offset="100%" stop-color="#FFFFFF" />
+    </linearGradient>
   </defs>
 
-  <!-- Rounded Squircle Background in Primary Navy (#101D2D) with Mint Green border accent -->
-  <rect x="8" y="8" width="496" height="496" rx="128" fill="url(#splitzeBg)" stroke="#63E6BE" stroke-opacity="0.35" stroke-width="12" />
-  <rect x="8" y="8" width="496" height="496" rx="128" fill="url(#mintGlow)" />
+  <g clip-path="url(#splitzeCircleClip)">
+    <!-- Base Deep Navy Circle -->
+    <rect x="0" y="0" width="512" height="512" fill="url(#navyGrad)" />
 
-  <!-- Upper Split S Ribbon — Mint Green (#63E6BE) -->
-  <path
-    d="M336 112 H200 C160.235 112 128 144.235 128 184 C128 223.765 160.235 256 200 256 H298"
-    fill="none"
-    stroke="#63E6BE"
-    stroke-width="48"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
-  <path
-    d="M298 78 L350 112 L298 146"
-    fill="none"
-    stroke="#63E6BE"
-    stroke-width="36"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
+    <!-- Upper-Left Teal Region -->
+    <path
+      d="M 0 0 L 512 0 L 512 135 L 341 245 L 284 167 Q 158 192 27 320 L 0 348 Z"
+      fill="url(#tealGrad)"
+    />
 
-  <!-- Lower Even S Ribbon — Crisp White (#FFFFFF) -->
-  <path
-    d="M176 352 H312 C351.765 352 384 319.765 384 280 C384 240.235 351.765 208 312 208 H214"
-    fill="none"
-    stroke="#FFFFFF"
-    stroke-width="48"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    transform="translate(0, 48)"
-  />
-  <path
-    d="M214 318 L162 352 L214 386"
-    fill="none"
-    stroke="#FFFFFF"
-    stroke-width="36"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    transform="translate(0, 48)"
-  />
+    <!-- White Sweeping Left Curve Ribbon -->
+    <path
+      d="M 15 358 Q 148 214 307 199 L 284 167 Q 138 186 0 330 Z"
+      fill="#FFFFFF"
+    />
 
-  <!-- "Splitze" Wordmark underneath -->
-  <text
-    x="256"
-    y="464"
-    text-anchor="middle"
-    fill="#FFFFFF"
-    font-family="system-ui, -apple-system, 'Plus Jakarta Sans', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
-    font-size="68"
-    font-weight="800"
-    letter-spacing="-1.5"
-  >Split<tspan fill="#63E6BE">ze</tspan></text>
+    <!-- Checkmark Ribbon with Subtle Silver Fold -->
+    <path
+      d="M 276 216 L 339 302 L 495 190 L 474 159 L 341 245 L 308 202 Z"
+      fill="url(#checkFoldGrad)"
+    />
+
+    <!-- Crisp White Right Ascender of the Checkmark -->
+    <path
+      d="M 339 302 L 495 190 L 474 159 L 341 245 Z"
+      fill="#FFFFFF"
+    />
+  </g>
 </svg>

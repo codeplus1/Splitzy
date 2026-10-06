@@ -1,70 +1,43 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <linearGradient id="splitzeMaskBg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#152436" />
-      <stop offset="50%" stop-color="#101D2D" />
-      <stop offset="100%" stop-color="#0B1420" />
+    <clipPath id="maskCircleClip">
+      <circle cx="256" cy="256" r="196" />
+    </clipPath>
+    <linearGradient id="tealGradMask" x1="60" y1="40" x2="360" y2="280" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#05B2DC" />
+      <stop offset="100%" stop-color="#0093B5" />
     </linearGradient>
-    <radialGradient id="mintMaskGlow" cx="74%" cy="22%" r="55%">
-      <stop offset="0%" stop-color="#63E6BE" stop-opacity="0.25" />
-      <stop offset="100%" stop-color="#63E6BE" stop-opacity="0" />
-    </radialGradient>
+    <linearGradient id="navyGradMask" x1="160" y1="220" x2="450" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#132D54" />
+      <stop offset="100%" stop-color="#0B1D3A" />
+    </linearGradient>
+    <linearGradient id="checkFoldGradMask" x1="276" y1="215" x2="355" y2="295" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#CFD6DF" />
+      <stop offset="65%" stop-color="#F1F4F8" />
+      <stop offset="100%" stop-color="#FFFFFF" />
+    </linearGradient>
   </defs>
 
-  <!-- Full-bleed background in Primary Navy (#101D2D) for Android maskable safe zone -->
-  <rect width="512" height="512" fill="url(#splitzeMaskBg)" />
-  <rect width="512" height="512" fill="url(#mintMaskGlow)" />
+  <!-- Full bleed safe-zone background for maskable icons -->
+  <rect width="512" height="512" fill="#FFFFFF" />
 
-  <!-- Centered within 80% safe zone -->
-  <g transform="translate(256, 256) scale(0.76) translate(-256, -256)">
-    <!-- Upper Split S Ribbon — Mint Green (#63E6BE) -->
+  <g clip-path="url(#maskCircleClip)">
+    <rect x="0" y="0" width="512" height="512" fill="url(#navyGradMask)" />
     <path
-      d="M336 112 H200 C160.235 112 128 144.235 128 184 C128 223.765 160.235 256 200 256 H298"
-      fill="none"
-      stroke="#63E6BE"
-      stroke-width="48"
-      stroke-linecap="round"
-      stroke-linejoin="round"
+      d="M 0 0 L 512 0 L 512 148 L 332 246 L 280 175 Q 168 198 52 312 L 0 362 Z"
+      fill="url(#tealGradMask)"
     />
     <path
-      d="M298 78 L350 112 L298 146"
-      fill="none"
-      stroke="#63E6BE"
-      stroke-width="36"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
-
-    <!-- Lower Even S Ribbon — Crisp White (#FFFFFF) -->
-    <path
-      d="M176 352 H312 C351.765 352 384 319.765 384 280 C384 240.235 351.765 208 312 208 H214"
-      fill="none"
-      stroke="#FFFFFF"
-      stroke-width="48"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      transform="translate(0, 48)"
-    />
-    <path
-      d="M214 318 L162 352 L214 386"
-      fill="none"
-      stroke="#FFFFFF"
-      stroke-width="36"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      transform="translate(0, 48)"
-    />
-
-    <!-- "Splitze" Wordmark underneath -->
-    <text
-      x="256"
-      y="464"
-      text-anchor="middle"
+      d="M 40 346 Q 160 218 300 204 L 280 175 Q 150 192 25 320 Z"
       fill="#FFFFFF"
-      font-family="system-ui, -apple-system, 'Plus Jakarta Sans', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
-      font-size="68"
-      font-weight="800"
-      letter-spacing="-1.5"
-    >Split<tspan fill="#63E6BE">ze</tspan></text>
+    />
+    <path
+      d="M 273 219 L 330 296 L 470 196 L 451 168 L 332 246 L 302 206 Z"
+      fill="url(#checkFoldGradMask)"
+    />
+    <path
+      d="M 330 296 L 470 196 L 451 168 L 332 246 Z"
+      fill="#FFFFFF"
+    />
   </g>
 </svg>
