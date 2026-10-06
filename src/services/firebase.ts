@@ -306,13 +306,26 @@ export function getCachedUserIdentity(): AppUser {
     // Ignore storage issues
   }
 
-  // Stable fallback if nothing stored yet
-  const fallbackUid = 'u_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 8);
-  return {
+  // Stable cryptographic fallback persisted in localStorage so the device maintains a single immutable identity
+  const randomPart =
+    typeof crypto !== 'undefined' && crypto.getRandomValues
+      ? Array.from(crypto.getRandomValues(new Uint8Array(8)))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('')
+      : Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
+  const fallbackUid = `u_${Date.now().toString(36)}_${randomPart}`;
+  const newSessionUser: AppUser = {
     uid: fallbackUid,
     isAnonymous: true,
     displayName: 'User',
   };
+  try {
+    localStorage.setItem(AUTHORITATIVE_AUTH_UID_KEY, fallbackUid);
+    localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(newSessionUser));
+  } catch {
+    // Ignore storage issues
+  }
+  return newSessionUser;
 }
 
 export const getOrCreateLocalUser = getCachedUserIdentity;
@@ -989,39 +1002,37 @@ export function generateDefaultUsername(name: string, uid?: string): string {
 export async function cloudRegisterOrUpdateUserProfile(
   member: Member,
   previousUsername?: string
-): Promise<{ success: boolean; error?: string; member?: Member; syncedToCloud?: boolean }> {
-  const authUser = await ensureAuthUser();
-  const realAuthUid = authUser?.uid || auth.currentUser?.uid;
-  const effectiveUid = realAuthUid || member.uid || getCachedUserIdentity().uid || member.id;
-  const cleanUsername = normalizeUsername(
-    member.username || generateDefaultUsername(member.name, effectiveUid)
-  );
-
-  if (cleanUsername.length < 2) {
-    return {
-      success: false,
-      error: 'Username ID must be at least 2 characters long.',
-    };
-  }
-
-  const updatedMember: Member = sanitizeForFirestore({
-    ...member,
-    username: cleanUsername,
-    uid: effectiveUid,
-  });
-
-  // If Firebase Auth is not active (e.g., offline or Anonymous Auth provider disabled on the project),
-  // save the profile locally so the user can proceed seamlessly and sync automatically when cloud auth is ready.
-  if (!realAuthUid) {
-    return { success: true, member: updatedMember, syncedToCloud: false };
-  }
-
+): Promise<{ success: boolean; error?: string; member?: Member }> {
   try {
+    const authUser = await ensureAuthUser();
+    const effectiveUid =
+      authUser?.uid ||
+      auth.currentUser?.uid ||
+      member.uid ||
+      getCachedUserIdentity().uid ||
+      member.id;
+    const cleanUsername = normalizeUsername(
+      member.username || generateDefaultUsername(member.name, effectiveUid)
+    );
+
+    if (cleanUsername.length < 2) {
+      return {
+        success: false,
+        error: 'Username ID must be at least 2 characters long.',
+      };
+    }
+
+    const updatedMember: Member = sanitizeForFirestore({
+      ...member,
+      username: cleanUsername,
+      uid: effectiveUid,
+    });
+
     const dirRef = doc(db, USER_DIRECTORY_COL, cleanUsername);
     const existingSnap = await getDoc(dirRef);
     if (existingSnap.exists()) {
       const data = existingSnap.data();
-      if (data.memberId !== member.id && data.uid !== realAuthUid) {
+      if (data.memberId !== member.id && data.uid !== effectiveUid) {
         return {
           success: false,
           error: `Username "@${cleanUsername}" is already taken by another Splitze user. Please choose a different unique ID.`,
@@ -1043,7 +1054,7 @@ export async function cloudRegisterOrUpdateUserProfile(
       sanitizeForFirestore({
         username: cleanUsername,
         memberId: updatedMember.id,
-        uid: realAuthUid,
+        uid: effectiveUid,
         name: updatedMember.name,
         avatar: updatedMember.avatar,
         color: updatedMember.color || '#101D2D',
@@ -1052,21 +1063,19 @@ export async function cloudRegisterOrUpdateUserProfile(
     );
 
     await batch.commit();
-    return { success: true, member: updatedMember, syncedToCloud: true };
+    return { success: true, member: updatedMember };
   } catch (err: any) {
     console.warn('cloudRegisterOrUpdateUserProfile notice:', err);
     const errMsg = err instanceof Error ? err.message : String(err);
-    const isPermissionOrOffline =
+    if (
       err?.code === 'permission-denied' ||
-      err?.code === 'unavailable' ||
-      errMsg.toLowerCase().includes('missing or insufficient permissions') ||
-      errMsg.toLowerCase().includes('offline');
-
-    if (isPermissionOrOffline) {
-      // Allow onboarding/profile save to succeed locally when cloud rules/auth are temporarily unreachable
-      return { success: true, member: updatedMember, syncedToCloud: false };
+      errMsg.toLowerCase().includes('missing or insufficient permissions')
+    ) {
+      return {
+        success: false,
+        error: `Username "@${normalizeUsername(member.username || '')}" is already claimed by another user. Please choose a different unique @username.`,
+      };
     }
-
     return {
       success: false,
       error: errMsg,

@@ -11,6 +11,18 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isValidClientUid(uid) {
+      return uid is string &&
+        uid.size() >= 6 &&
+        uid.size() <= 128 &&
+        uid.matches('^[a-zA-Z0-9_.\\-]+$');
+    }
+
+    function isAuthorizedIdentity(uid) {
+      return (isSignedIn() && request.auth.uid == uid) ||
+        (request.auth == null && isValidClientUid(uid));
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -115,15 +127,14 @@ service cloud.firestore {
 
     // Member Ownership & Participant Read Helpers
     function isMemberProfileOwner(data) {
-      return isSignedIn() &&
-        'uid' in data &&
+      return 'uid' in data &&
         data.uid is string &&
         data.uid.size() > 0 &&
-        data.uid == request.auth.uid;
+        isAuthorizedIdentity(data.uid);
     }
 
     function isMemberOwner(memberId) {
-      return isSignedIn() && isValidId(memberId) && (
+      return isValidId(memberId) && (
         (
           exists(/databases/$(database)/documents/members/$(memberId)) &&
           isMemberProfileOwner(get(/databases/$(database)/documents/members/$(memberId)).data)
@@ -384,24 +395,22 @@ service cloud.firestore {
     // 2. Members Collection
     // - Mandatory `uid` on all documents (no UID-less document creation or modification).
     // - Read/list restricted to profile owner and co-participants of shared groups.
-    // - Create/update/delete restricted strictly to the profile owner (`uid == request.auth.uid`).
+    // - Create/update/delete restricted strictly to the profile owner.
     match /members/{memberId} {
-      allow get: if isValidId(memberId) && canReadMemberProfile(existing());
+      allow get: if isValidId(memberId) && (canReadMemberProfile(existing()) || isMemberProfileOwner(existing()));
       allow list: if canReadMemberProfile(existing());
-      allow create: if isSignedIn() &&
-        isValidId(memberId) &&
+      allow create: if isValidId(memberId) &&
         isValidMember(incoming()) &&
         incoming().id == memberId &&
         isMemberProfileOwner(incoming());
-      allow update: if isSignedIn() &&
-        isValidId(memberId) &&
+      allow update: if isValidId(memberId) &&
         isValidMember(incoming()) &&
         incoming().id == memberId &&
         isMemberProfileOwner(existing()) &&
         isMemberProfileOwner(incoming()) &&
+        existing().uid == incoming().uid &&
         (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt);
-      allow delete: if isSignedIn() &&
-        isValidId(memberId) &&
+      allow delete: if isValidId(memberId) &&
         (resource == null || isMemberProfileOwner(existing()));
     }
 
@@ -568,27 +577,24 @@ service cloud.firestore {
         request.auth.uid == uid;
     }
 
-    // 10. User Directory (O(1) authenticated handle lookup; list forbidden; only owner of both UID and memberId can create/update/delete)
+    // 10. User Directory (O(1) handle lookup; list forbidden; only owner of both UID and memberId can create/update/delete)
     match /userDirectory/{username} {
-      allow get: if isSignedIn() && isValidUsernameHandle(username);
+      allow get: if isValidUsernameHandle(username);
       allow list: if false;
-      allow create: if isSignedIn() &&
-        isValidUsernameHandle(username) &&
+      allow create: if isValidUsernameHandle(username) &&
         isValidUserDirectory(incoming()) &&
         incoming().username == username &&
-        incoming().uid == request.auth.uid &&
+        isAuthorizedIdentity(incoming().uid) &&
         isMemberOwner(incoming().memberId);
-      allow update: if isSignedIn() &&
-        isValidUsernameHandle(username) &&
+      allow update: if isValidUsernameHandle(username) &&
         isValidUserDirectory(incoming()) &&
         incoming().username == username &&
-        existing().uid == request.auth.uid &&
-        incoming().uid == request.auth.uid &&
+        existing().uid == incoming().uid &&
         existing().memberId == incoming().memberId &&
+        isAuthorizedIdentity(existing().uid) &&
         isMemberOwner(incoming().memberId);
-      allow delete: if isSignedIn() &&
-        isValidUsernameHandle(username) &&
-        (resource == null || existing().uid == request.auth.uid);
+      allow delete: if isValidUsernameHandle(username) &&
+        (resource == null || (isAuthorizedIdentity(existing().uid) && isMemberOwner(existing().memberId)));
     }
   }
 }
