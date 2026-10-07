@@ -372,6 +372,26 @@ export function reconcileAppState(
     }
   });
 
+  // Ensure every GroupMember (including guest participants without a /members/{id} record)
+  // has a corresponding Member entry in memberMap so Dashboard, settlement engine, and retention work seamlessly
+  gmMap.forEach(gm => {
+    if (gm.memberId && gm.memberName && !memberMap.has(gm.memberId)) {
+      memberMap.set(gm.memberId, {
+        id: gm.memberId,
+        name: gm.memberName,
+        username: gm.memberUsername,
+        avatar: gm.memberAvatar || '🙂',
+        color: gm.memberColor || '#087F5B',
+        uid: gm.memberUid ?? null,
+        userId: gm.memberUid ?? null,
+        accountType: gm.accountType || (gm.memberUsername ? 'registered' : 'guest'),
+        isTemporary: gm.accountType === 'guest' || !gm.memberUsername,
+        groupId: gm.groupId,
+        createdAt: new Date().toISOString(),
+      });
+    }
+  });
+
   // 4. Reconcile Expenses (CRITICAL: Do not drop or overwrite local offline expenses/edits that cloud hasn't received yet)
   const expenseMap = new Map<string, Expense>();
   

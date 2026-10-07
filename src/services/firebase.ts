@@ -663,29 +663,40 @@ export function subscribeToUserCloudSync(
         loadedGm = true;
 
         // When groupMembers update, resolve the associated member profiles via authorized single-doc gets + GroupMember metadata
-        const memberIds = Array.from(new Set(scopedGroupMembers.map(gm => gm.memberId))).slice(0, 30);
-        if (memberIds.length === 0) {
-          scopedMembers = [];
+        const memberMap = new Map<string, Member>();
+        for (const gm of scopedGroupMembers) {
+          if (gm.memberId && gm.memberName && !memberMap.has(gm.memberId)) {
+            memberMap.set(gm.memberId, {
+              id: gm.memberId,
+              name: gm.memberName,
+              username: gm.memberUsername,
+              avatar: gm.memberAvatar || '🙂',
+              color: gm.memberColor || '#087F5B',
+              uid: gm.memberUid ?? null,
+              userId: gm.memberUid ?? null,
+              accountType: gm.accountType || (gm.memberUsername ? 'registered' : 'guest'),
+              isTemporary: gm.accountType === 'guest' || !gm.memberUsername,
+              groupId: gm.groupId,
+              createdAt: new Date().toISOString(),
+            });
+          }
+        }
+
+        const registeredMemberIds = Array.from(
+          new Set(
+            scopedGroupMembers
+              .filter(gm => gm.accountType !== 'guest' && !gm.memberId.startsWith('guest_'))
+              .map(gm => gm.memberId)
+          )
+        ).slice(0, 30);
+
+        if (registeredMemberIds.length === 0) {
+          scopedMembers = Array.from(memberMap.values());
           loadedMemb = true;
           emitAggregatedData();
         } else {
-          Promise.allSettled(memberIds.map(id => getDoc(doc(db, MEMBERS_COL, id))))
+          Promise.allSettled(registeredMemberIds.map(id => getDoc(doc(db, MEMBERS_COL, id))))
             .then(results => {
-              const memberMap = new Map<string, Member>();
-              for (const gm of scopedGroupMembers) {
-                if (gm.memberId && gm.memberName && !memberMap.has(gm.memberId)) {
-                  memberMap.set(gm.memberId, {
-                    id: gm.memberId,
-                    name: gm.memberName,
-                    username: gm.memberUsername,
-                    avatar: gm.memberAvatar || '👤',
-                    color: gm.memberColor || '#101D2D',
-                    uid: gm.memberUid,
-                    groupId: gm.groupId,
-                    createdAt: new Date().toISOString(),
-                  });
-                }
-              }
               for (const res of results) {
                 if (res.status === 'fulfilled' && res.value.exists()) {
                   const m = res.value.data() as Member;
@@ -697,6 +708,7 @@ export function subscribeToUserCloudSync(
               emitAggregatedData();
             })
             .catch(() => {
+              scopedMembers = Array.from(memberMap.values());
               loadedMemb = true;
               emitAggregatedData();
             });
@@ -882,9 +894,10 @@ export async function cloudCreateGroup(
     const ownMember =
       newMembers.find(m => m.uid && m.uid === realAuthUid) ||
       newMembers.find(m => m.uid && isLocalFallbackUid(m.uid)) ||
+      newMembers.find(m => m.accountType !== 'guest' && !m.id.startsWith('guest_')) ||
       newMembers[0];
 
-    if (ownMember) {
+    if (ownMember && ownMember.accountType !== 'guest' && !ownMember.id.startsWith('guest_')) {
       batch.set(
         doc(db, MEMBERS_COL, ownMember.id),
         sanitizeForFirestore({
@@ -899,23 +912,29 @@ export async function cloudCreateGroup(
 
     for (const gm of newGroupMembers) {
       const mInfo = memberLookup.get(gm.memberId);
-      const resolvedMemberUid =
-        gm.memberId === ownMember?.id
-          ? realAuthUid || effectiveUid
-          : gm.memberUid && !isLocalFallbackUid(gm.memberUid)
-          ? gm.memberUid
-          : mInfo?.uid && !isLocalFallbackUid(mInfo.uid)
-          ? mInfo.uid
-          : undefined;
+      const isGuest =
+        gm.accountType === 'guest' ||
+        mInfo?.accountType === 'guest' ||
+        gm.memberId.startsWith('guest_');
+      const resolvedMemberUid = isGuest
+        ? null
+        : gm.memberId === ownMember?.id
+        ? realAuthUid || effectiveUid
+        : gm.memberUid && !isLocalFallbackUid(gm.memberUid)
+        ? gm.memberUid
+        : mInfo?.uid && !isLocalFallbackUid(mInfo.uid)
+        ? mInfo.uid
+        : undefined;
       batch.set(
         doc(db, GROUP_MEMBERS_COL, gm.id),
         sanitizeForFirestore({
           ...gm,
           memberName: gm.memberName || mInfo?.name,
-          memberUsername: gm.memberUsername || mInfo?.username,
+          memberUsername: isGuest ? undefined : gm.memberUsername || mInfo?.username,
           memberAvatar: gm.memberAvatar || mInfo?.avatar,
           memberColor: gm.memberColor || mInfo?.color,
           memberUid: resolvedMemberUid,
+          accountType: isGuest ? 'guest' : gm.accountType || mInfo?.accountType || 'registered',
         })
       );
     }
@@ -2516,9 +2535,13 @@ export async function cloudAddMember(
     const authUser = await ensureAuthUser();
     const realAuthUid = authUser?.uid || auth.currentUser?.uid;
     const batch = writeBatch(db);
+    const isGuest =
+      member.accountType === 'guest' ||
+      groupMember.accountType === 'guest' ||
+      member.id.startsWith('guest_');
 
-    // Only write to /members/{id} if the member belongs to the current user
-    if (!member.uid || member.uid === realAuthUid) {
+    // Only write to /members/{id} if the member is an actual user profile belonging to the current user (never for guest participants)
+    if (!isGuest && (!member.uid || member.uid === realAuthUid)) {
       batch.set(
         doc(db, MEMBERS_COL, member.id),
         sanitizeForFirestore({
@@ -2535,15 +2558,16 @@ export async function cloudAddMember(
       sanitizeForFirestore({
         ...groupMember,
         memberName: groupMember.memberName || member.name,
-        memberUsername: groupMember.memberUsername || member.username,
+        memberUsername: isGuest ? undefined : groupMember.memberUsername || member.username,
         memberAvatar: groupMember.memberAvatar || member.avatar,
         memberColor: groupMember.memberColor || member.color,
-        memberUid: groupMember.memberUid || member.uid,
+        memberUid: isGuest ? null : groupMember.memberUid || member.uid,
+        accountType: isGuest ? 'guest' : groupMember.accountType || member.accountType || 'registered',
       })
     );
 
-    // Only the group owner can add another user's UID to the group's memberUserIds
-    if (isGroupOwner && member.uid && member.uid !== realAuthUid) {
+    // Only the group owner can add another registered user's UID to the group's memberUserIds
+    if (!isGuest && isGroupOwner && member.uid && member.uid !== realAuthUid) {
       batch.update(doc(db, GROUPS_COL, groupMember.groupId), {
         memberUserIds: arrayUnion(member.uid),
       });
@@ -2879,6 +2903,7 @@ export async function cloudUploadFullState(
 
     for (const m of state.members) {
       if (!m.id || m.status === 'deleted') continue;
+      if (m.accountType === 'guest' || m.id.startsWith('guest_')) continue;
       const isOwnMember =
         m.id === ownMemberId ||
         (Boolean(m.uid) && (m.uid === realAuthUid || isLocalFallbackUid(m.uid)));
@@ -2900,12 +2925,19 @@ export async function cloudUploadFullState(
     for (const gm of state.groupMembers) {
       if (!gm.id || !validGroupIds.has(gm.groupId)) continue;
       const mInfo = memberLookup.get(gm.memberId);
+      const isGuest =
+        gm.accountType === 'guest' ||
+        mInfo?.accountType === 'guest' ||
+        gm.memberId.startsWith('guest_');
       const isOwnMemberRecord =
-        gm.memberId === ownMemberId ||
-        mInfo?.uid === realAuthUid ||
-        (Boolean(mInfo?.uid) && isLocalFallbackUid(mInfo?.uid));
+        !isGuest &&
+        (gm.memberId === ownMemberId ||
+          mInfo?.uid === realAuthUid ||
+          (Boolean(mInfo?.uid) && isLocalFallbackUid(mInfo?.uid)));
       if (ownedGroupIds.has(gm.groupId) || isOwnMemberRecord) {
-        const resolvedMemberUid = isOwnMemberRecord
+        const resolvedMemberUid = isGuest
+          ? null
+          : isOwnMemberRecord
           ? realAuthUid || effectiveUid
           : gm.memberUid && !isLocalFallbackUid(gm.memberUid)
           ? gm.memberUid
@@ -2918,10 +2950,11 @@ export async function cloudUploadFullState(
           data: sanitizeForFirestore({
             ...gm,
             memberName: gm.memberName || mInfo?.name,
-            memberUsername: gm.memberUsername || mInfo?.username,
+            memberUsername: isGuest ? undefined : gm.memberUsername || mInfo?.username,
             memberAvatar: gm.memberAvatar || mInfo?.avatar,
             memberColor: gm.memberColor || mInfo?.color,
             memberUid: resolvedMemberUid,
+            accountType: isGuest ? 'guest' : gm.accountType || mInfo?.accountType || 'registered',
           }),
         });
       }

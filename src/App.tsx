@@ -1300,16 +1300,20 @@ export default function App() {
       inviteCode: uniqueInviteCode,
     };
 
-    const newGroupMembers: GroupMember[] = newMembers.map(m => ({
-      id: `gm_${preparedGroup.id}_${m.id}`,
-      groupId: preparedGroup.id,
-      memberId: m.id,
-      memberName: m.name,
-      memberUsername: m.username,
-      memberAvatar: m.avatar,
-      memberColor: m.color,
-      memberUid: m.uid,
-    }));
+    const newGroupMembers: GroupMember[] = newMembers.map(m => {
+      const isGuest = m.accountType === 'guest' || m.id.startsWith('guest_');
+      return {
+        id: `gm_${preparedGroup.id}_${m.id}`,
+        groupId: preparedGroup.id,
+        memberId: m.id,
+        memberName: m.name,
+        memberUsername: isGuest ? undefined : m.username,
+        memberAvatar: m.avatar,
+        memberColor: m.color,
+        memberUid: isGuest ? null : m.uid,
+        accountType: isGuest ? 'guest' : m.accountType || (m.username ? 'registered' : 'guest'),
+      };
+    });
 
     setAppState(prev => ({
       ...prev,
@@ -1440,8 +1444,8 @@ export default function App() {
     });
   };
 
-  // Add Verified Registered Member to Group (Restricted to Group Owner)
-  const handleAddMemberToGroup = (verifiedMember: Member) => {
+  // Add Member to Group (supports both Guest Participants by name and Verified Registered Users by @username)
+  const handleAddMemberToGroup = (newMember: Member) => {
     if (!currentGroup) return;
     const isLocalCreator =
       !currentGroup.createdBy ||
@@ -1453,46 +1457,61 @@ export default function App() {
       return;
     }
 
+    const isGuest =
+      newMember.accountType === 'guest' ||
+      newMember.id.startsWith('guest_') ||
+      (!newMember.username && !newMember.uid);
+
+    const normalizedMember: Member = {
+      ...newMember,
+      groupId: newMember.groupId || currentGroup.id,
+      uid: isGuest ? null : newMember.uid ?? null,
+      userId: isGuest ? null : newMember.userId ?? newMember.uid ?? null,
+      accountType: isGuest ? 'guest' : 'registered',
+      isTemporary: isGuest ? true : Boolean(newMember.isTemporary),
+    };
+
     const newGroupMember: GroupMember = {
-      id: `gm_${currentGroup.id}_${verifiedMember.id}`,
+      id: `gm_${currentGroup.id}_${normalizedMember.id}`,
       groupId: currentGroup.id,
-      memberId: verifiedMember.id,
-      memberName: verifiedMember.name,
-      memberUsername: verifiedMember.username,
-      memberAvatar: verifiedMember.avatar,
-      memberColor: verifiedMember.color,
-      memberUid: verifiedMember.uid,
+      memberId: normalizedMember.id,
+      memberName: normalizedMember.name,
+      memberUsername: isGuest ? undefined : normalizedMember.username,
+      memberAvatar: normalizedMember.avatar,
+      memberColor: normalizedMember.color,
+      memberUid: isGuest ? null : normalizedMember.uid,
+      accountType: isGuest ? 'guest' : 'registered',
     };
 
     setAppState(prev => {
-      const memberExists = prev.members.some(m => m.id === verifiedMember.id);
+      const memberExists = prev.members.some(m => m.id === normalizedMember.id);
       const gmExists = prev.groupMembers.some(
-        gm => gm.groupId === currentGroup.id && gm.memberId === verifiedMember.id
+        gm => gm.groupId === currentGroup.id && gm.memberId === normalizedMember.id
       );
 
       return {
         ...prev,
         groups: prev.groups.map(g =>
-          g.id === currentGroup.id && verifiedMember.uid
+          g.id === currentGroup.id && !isGuest && normalizedMember.uid
             ? {
                 ...g,
                 memberUserIds: Array.from(
-                  new Set([...(g.memberUserIds || []), verifiedMember.uid])
+                  new Set([...(g.memberUserIds || []), normalizedMember.uid])
                 ),
               }
             : g
         ),
         members: memberExists
-          ? prev.members.map(m => (m.id === verifiedMember.id ? verifiedMember : m))
-          : [...prev.members, verifiedMember],
+          ? prev.members.map(m => (m.id === normalizedMember.id ? normalizedMember : m))
+          : [...prev.members, normalizedMember],
         groupMembers: gmExists
           ? prev.groupMembers
           : [...prev.groupMembers, newGroupMember],
       };
     });
 
-    // Sync verified member & group access to Cloud Firestore
-    cloudAddMember(verifiedMember, newGroupMember, true);
+    // Sync member & group participant record to Cloud Firestore
+    cloudAddMember(normalizedMember, newGroupMember, true);
   };
 
   // Update Group details (Restricted to Group Owner)
@@ -1727,13 +1746,20 @@ export default function App() {
       if (existing) {
         scoped.push(existing);
       } else if (gm.memberName) {
+        const isGuest =
+          gm.accountType === 'guest' ||
+          gm.memberId.startsWith('guest_') ||
+          !gm.memberUsername;
         scoped.push({
           id: gm.memberId,
           name: gm.memberName,
           username: gm.memberUsername,
-          avatar: gm.memberAvatar || '👤',
-          color: gm.memberColor || '#101D2D',
-          uid: gm.memberUid,
+          avatar: gm.memberAvatar || '🙂',
+          color: gm.memberColor || '#087F5B',
+          uid: gm.memberUid ?? null,
+          userId: gm.memberUid ?? null,
+          accountType: isGuest ? 'guest' : 'registered',
+          isTemporary: isGuest,
           groupId: gm.groupId,
           createdAt: new Date().toISOString(),
         });

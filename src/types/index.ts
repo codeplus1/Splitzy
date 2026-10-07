@@ -1,11 +1,14 @@
 export type CalendarType = 'AD' | 'BS';
 export type SupportedLanguage = 'en' | 'fr' | 'ne' | 'hi' | 'mai';
 export type SplitType = 'equal' | 'exact' | 'percentage' | 'shares' | 'items';
+export type MemberAccountType = 'registered' | 'guest';
 
 export interface Member {
   id: string;
   username?: string; // Unique lowercase handle (e.g. "saroj_88", "user_c") registered in Splitzy DB
-  uid?: string; // Authoritative Firebase Auth UID of the registered device/user
+  uid?: string | null; // Authoritative Firebase Auth UID of the registered device/user, or null/undefined for guest participants
+  userId?: string | null; // Alias for registered user ID or null for guest participants
+  accountType?: MemberAccountType; // 'registered' for Splitzy account holders, 'guest' for group-only participants
   groupId?: string; // Primary group association for rule-level participant verification
   memberUserIds?: string[]; // Authorized co-participant UIDs allowed to read this profile
   name: string;
@@ -47,7 +50,59 @@ export interface GroupMember {
   memberUsername?: string;
   memberAvatar?: string;
   memberColor?: string;
-  memberUid?: string;
+  memberUid?: string | null;
+  accountType?: MemberAccountType;
+}
+
+const GUEST_AVATARS = ['🙂', '😎', '🧑‍🤝‍🧑', '🎸', '🏔️', '☕', '🍕', '🚀', '🌟', '🎨'];
+const GUEST_COLORS = [
+  '#087F5B',
+  '#1D4ED8',
+  '#7C3AED',
+  '#B45309',
+  '#BE123C',
+  '#0F766E',
+  '#4338CA',
+  '#15803D',
+];
+
+/**
+ * Determines whether a member record represents a guest participant (no Splitzy account required).
+ */
+export function isGuestMember(member?: Partial<Member> | null): boolean {
+  if (!member) return false;
+  if (member.accountType === 'guest') return true;
+  if (member.id && member.id.startsWith('guest_')) return true;
+  if (!member.username && !member.uid && !member.isTemporary) return true;
+  return false;
+}
+
+/**
+ * Creates a guest group participant by name without requiring a Splitzy account,
+ * username, email, or database verification.
+ */
+export function createGuestParticipant(name: string, groupId?: string, indexHint = 0): Member {
+  const cleanName = name.trim();
+  const randomSuffix = Math.random().toString(36).substring(2, 8);
+  const id = `guest_${Date.now()}_${randomSuffix}`;
+  const hashSeed = cleanName
+    .split('')
+    .reduce((acc, ch) => acc + ch.charCodeAt(0), Math.max(0, indexHint));
+  const avatar = GUEST_AVATARS[hashSeed % GUEST_AVATARS.length];
+  const color = GUEST_COLORS[hashSeed % GUEST_COLORS.length];
+
+  return {
+    id,
+    name: cleanName,
+    uid: null,
+    userId: null,
+    accountType: 'guest',
+    isTemporary: true,
+    groupId,
+    avatar,
+    color,
+    createdAt: new Date().toISOString(),
+  };
 }
 
 export interface ExpenseLineItem {

@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
-import { X, Trash2, Users, AtSign } from 'lucide-react';
-import { Group, Member, SupportedLanguage, CalendarType, RetentionPeriod } from '../types';
+import { X, Trash2, Users, AtSign, UserPlus } from 'lucide-react';
+import {
+  Group,
+  Member,
+  SupportedLanguage,
+  CalendarType,
+  RetentionPeriod,
+  createGuestParticipant,
+} from '../types';
 import { SUPPORTED_CURRENCIES } from '../core/currency';
 import { translate } from '../core/i18n';
 import { MemberAvatar } from './MemberAvatar';
@@ -26,18 +33,25 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
   const [preferredCalendar, setPreferredCalendar] = useState<CalendarType>('BS');
   const [retentionPeriod, setRetentionPeriod] = useState<RetentionPeriod>(DEFAULT_RETENTION_OPTION);
 
+  const isTemporaryUser = Boolean(
+    currentUserMember?.isTemporary || !currentUserMember?.username
+  );
+
   const ownerEntry: Member & { isOwner?: boolean } = currentUserMember
     ? {
         ...currentUserMember,
         avatar: currentUserMember.avatar || '👨‍💻',
         color: currentUserMember.color || '#101D2D',
+        accountType: currentUserMember.username ? 'registered' : 'guest',
         isOwner: true,
       }
     : {
         id: `m_owner_${Date.now()}`,
-        name: 'Me',
+        name: 'Guest',
         avatar: '👨‍💻',
         color: '#101D2D',
+        accountType: 'guest',
+        isTemporary: true,
         createdAt: new Date().toISOString(),
         isOwner: true,
       };
@@ -46,18 +60,50 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
   const [members, setMembers] = useState<(Member & { isOwner?: boolean })[]>([ownerEntry]);
 
   const [newMemberIdentifier, setNewMemberIdentifier] = useState('');
+  const [addMode, setAddMode] = useState<'guest' | 'username'>(() =>
+    isTemporaryUser ? 'guest' : 'guest'
+  );
   const [isLookingUp, setIsLookingUp] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const isFrench = language === 'fr';
+
+  const addGuestByName = (rawName: string): Member | null => {
+    const cleanName = rawName.trim();
+    if (!cleanName) return null;
+    const guest = createGuestParticipant(cleanName, undefined, members.length);
+    return guest;
+  };
 
   const handleAddMember = async () => {
     if (isLookingUp) return;
     const trimmed = newMemberIdentifier.trim();
     if (!trimmed) return;
 
-    setIsLookingUp(true);
     setErrorMessage(null);
+    setStatusMessage(null);
+
+    const shouldLookupUsername =
+      !isTemporaryUser && (addMode === 'username' || trimmed.startsWith('@'));
+
+    if (!shouldLookupUsername) {
+      const cleanGuestName = trimmed.replace(/^@+/, '').trim();
+      if (!cleanGuestName) return;
+      const guestMember = addGuestByName(cleanGuestName);
+      if (guestMember) {
+        setMembers(prev => [...prev, guestMember]);
+        setNewMemberIdentifier('');
+        setStatusMessage(
+          isFrench
+            ? `${guestMember.name} ajouté(e) comme participant invité`
+            : `Added ${guestMember.name} as guest`
+        );
+      }
+      return;
+    }
+
+    setIsLookingUp(true);
     try {
       const lookup = await cloudLookupRegisteredUser(trimmed);
       if (!lookup.found || !lookup.member) {
@@ -65,7 +111,11 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
         return;
       }
 
-      const foundMember = lookup.member;
+      const foundMember: Member = {
+        ...lookup.member,
+        accountType: 'registered',
+        userId: lookup.member.uid ?? null,
+      };
       if (
         members.some(
           m =>
@@ -79,8 +129,9 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
         return;
       }
 
-      setMembers([...members, foundMember]);
+      setMembers(prev => [...prev, foundMember]);
       setNewMemberIdentifier('');
+      setStatusMessage(`Verified & added @${foundMember.username} (${foundMember.name})`);
     } finally {
       setIsLookingUp(false);
     }
@@ -104,15 +155,33 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
     let effectiveMembers = [...members];
     const pendingIdentifier = newMemberIdentifier.trim();
     if (pendingIdentifier) {
-      setIsLookingUp(true);
-      const lookup = await cloudLookupRegisteredUser(pendingIdentifier);
-      setIsLookingUp(false);
-      if (!lookup.found || !lookup.member) {
-        setErrorMessage(lookup.message);
-        return;
-      }
-      if (!effectiveMembers.some(m => m.id === lookup.member!.id)) {
-        effectiveMembers.push(lookup.member);
+      const shouldLookupUsername =
+        !isTemporaryUser && (addMode === 'username' || pendingIdentifier.startsWith('@'));
+      if (!shouldLookupUsername) {
+        const cleanGuestName = pendingIdentifier.replace(/^@+/, '').trim();
+        if (cleanGuestName) {
+          const guestMember = createGuestParticipant(
+            cleanGuestName,
+            undefined,
+            effectiveMembers.length
+          );
+          effectiveMembers.push(guestMember);
+        }
+      } else {
+        setIsLookingUp(true);
+        const lookup = await cloudLookupRegisteredUser(pendingIdentifier);
+        setIsLookingUp(false);
+        if (!lookup.found || !lookup.member) {
+          setErrorMessage(lookup.message);
+          return;
+        }
+        if (!effectiveMembers.some(m => m.id === lookup.member!.id)) {
+          effectiveMembers.push({
+            ...lookup.member,
+            accountType: 'registered',
+            userId: lookup.member.uid ?? null,
+          });
+        }
       }
     }
 
@@ -146,7 +215,11 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
     const finalMembers: Member[] = effectiveMembers.map(m => ({
       id: m.id,
       username: m.username,
-      uid: m.uid,
+      uid: m.uid ?? null,
+      userId: m.userId ?? m.uid ?? null,
+      accountType: m.accountType || (m.username ? 'registered' : 'guest'),
+      isTemporary: m.isTemporary ?? !m.username,
+      groupId,
       name: m.name.trim(),
       avatar: m.avatar,
       color: m.color,
@@ -288,11 +361,20 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
                     <span className="text-xs font-semibold text-[var(--ink)] truncate">
                       {m.name}
                     </span>
-                    {m.isOwner && (
+                    {m.username && (
+                      <span className="text-[10px] font-mono text-[var(--ink-secondary)]">
+                        @{m.username}
+                      </span>
+                    )}
+                    {m.isOwner ? (
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent-border)]">
                         {isFrench ? 'Vous' : 'You'}
                       </span>
-                    )}
+                    ) : m.accountType === 'guest' || !m.username ? (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[var(--surface-subtle)] text-[var(--ink-secondary)] border border-[var(--border)]">
+                        {isFrench ? 'Invité' : 'Guest'}
+                      </span>
+                    ) : null}
                   </div>
                   {!m.isOwner && (
                     <button
@@ -308,24 +390,72 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
               ))}
             </div>
 
-            {/* Add Registered Friends by @username */}
-            <div className="space-y-1 pt-1">
+            {/* Add People to Group */}
+            <div className="space-y-1.5 pt-1">
+              {!isTemporaryUser && (
+                <div className="flex items-center justify-between gap-2 pb-0.5">
+                  <span className="text-[11px] font-semibold text-[var(--ink-secondary)]">
+                    {isFrench ? 'Ajouter des personnes au groupe' : 'Add people to your group'}
+                  </span>
+                  <div className="inline-flex rounded-lg bg-[var(--surface-subtle)] p-0.5 border border-[var(--border)] text-[10px] font-semibold">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMode('guest');
+                        setErrorMessage(null);
+                      }}
+                      className={`px-2 py-0.5 rounded-md transition-colors cursor-pointer ${
+                        addMode === 'guest'
+                          ? 'bg-[var(--surface)] text-[var(--ink)] shadow-2xs'
+                          : 'text-[var(--ink-secondary)]'
+                      }`}
+                    >
+                      {isFrench ? 'Par nom (Invité)' : 'By Name (Guest)'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAddMode('username');
+                        setErrorMessage(null);
+                      }}
+                      className={`px-2 py-0.5 rounded-md transition-colors cursor-pointer ${
+                        addMode === 'username'
+                          ? 'bg-[var(--surface)] text-[var(--ink)] shadow-2xs'
+                          : 'text-[var(--ink-secondary)]'
+                      }`}
+                    >
+                      @username
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-center gap-2">
                 <div className="flex items-center grow rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] focus-within:border-[var(--accent)] focus-within:ring-3 focus-within:ring-[var(--accent)]/10 transition-all overflow-hidden">
                   <span className="pl-2.5 pr-1.5 py-1.5 text-xs font-mono font-bold text-[var(--ink-muted)] bg-[var(--surface-subtle)] border-r border-[var(--border-subtle)] select-none flex items-center">
-                    <AtSign className="w-3.5 h-3.5" />
+                    {!isTemporaryUser && addMode === 'username' ? (
+                      <AtSign className="w-3.5 h-3.5" />
+                    ) : (
+                      <UserPlus className="w-3.5 h-3.5" />
+                    )}
                   </span>
                   <input
+                    id="create-group-add-member-input"
                     type="text"
                     placeholder={
-                      isFrench
-                        ? 'Entrer le @username d’un utilisateur inscrit...'
-                        : "Enter registered user's @username (optional)..."
+                      !isTemporaryUser && addMode === 'username'
+                        ? isFrench
+                          ? 'Entrer le @username d’un utilisateur inscrit...'
+                          : "Enter registered user's @username..."
+                        : isFrench
+                        ? 'Entrer un prénom (ex. Abc, Rahul, Sarah)...'
+                        : 'Enter name (e.g. Abc, Rahul, Sarah)...'
                     }
                     value={newMemberIdentifier}
                     onChange={e => {
                       setNewMemberIdentifier(e.target.value);
                       if (errorMessage) setErrorMessage(null);
+                      if (statusMessage) setStatusMessage(null);
                     }}
                     onKeyDown={e => {
                       if (e.key === 'Enter') {
@@ -333,20 +463,34 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
                         handleAddMember();
                       }
                     }}
-                    className="w-full px-2.5 py-1.5 bg-transparent text-xs font-mono text-[var(--ink)] focus:outline-none"
+                    className="w-full px-2.5 py-1.5 bg-transparent text-xs text-[var(--ink)] focus:outline-none"
                   />
                 </div>
                 <button
+                  id="create-group-add-member-btn"
                   type="button"
                   disabled={isLookingUp}
                   onClick={handleAddMember}
                   className="px-3 py-1.5 text-xs font-bold text-[var(--accent)] bg-[var(--accent-soft)] hover:opacity-90 rounded-lg border border-[var(--accent-border)] transition-colors cursor-pointer shrink-0"
                 >
-                  {isLookingUp ? '...' : '+ Verify'}
+                  {isLookingUp
+                    ? '...'
+                    : !isTemporaryUser && addMode === 'username'
+                    ? '+ Verify'
+                    : '+ Add'}
                 </button>
               </div>
+              {statusMessage && (
+                <p className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                  ✓ {statusMessage}
+                </p>
+              )}
               <p className="text-[10px] text-[var(--ink-muted)]">
-                Only registered Splitze users in the database can be added by <code className="font-mono">@username</code>, or invite them later via the group invite code.
+                {!isTemporaryUser && addMode === 'username'
+                  ? 'Add a registered Splitze user by their @username, or switch to "By Name (Guest)" to add someone without an account.'
+                  : isFrench
+                  ? 'Entrez un nom pour ajouter quelqu’un à ce groupe. Aucun compte Splitze n’est requis.'
+                  : "Enter a name to add someone to this group. They don't need a Splitze account."}
               </p>
             </div>
           </div>

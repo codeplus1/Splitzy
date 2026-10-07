@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, ArrowRight, CheckCircle2, Copy, Check, CreditCard } from 'lucide-react';
-import { Group, Member, SettlementRecord, SupportedLanguage } from '../types';
+import { Group, Member, SettlementRecord, SupportedLanguage, isGuestMember } from '../types';
 import { MemberAvatar } from './MemberAvatar';
 import { formatMoney, getCurrencySymbol } from '../core/currency';
 import { translate } from '../core/i18n';
@@ -65,6 +65,16 @@ export const SettleModal: React.FC<SettleModalProps> = ({
 
     if (fromId === toId) {
       setError(isFrench ? 'Le payeur et le bénéficiaire doivent être différents.' : 'Payer and payee must be different members.');
+      return;
+    }
+
+    const isToGuest = isGuestMember(toMember);
+    if (currentUserId && toId !== currentUserId && !isToGuest) {
+      setError(
+        isFrench
+          ? 'Seul le membre qui reçoit le remboursement peut confirmer et régler ce paiement.'
+          : 'Only the member receiving the money back can confirm and record this settlement.'
+      );
       return;
     }
 

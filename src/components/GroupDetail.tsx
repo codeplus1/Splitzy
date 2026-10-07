@@ -16,6 +16,7 @@ import {
   QrCode,
   Lock,
   AtSign,
+  UserPlus,
   X,
 } from 'lucide-react';
 import {
@@ -27,6 +28,8 @@ import {
   SupportedLanguage,
   CalendarType,
   RetentionPeriod,
+  createGuestParticipant,
+  isGuestMember,
 } from '../types';
 import { RETENTION_PERIOD_OPTIONS } from '../core/retention';
 import { MemberAvatar } from './MemberAvatar';
@@ -90,6 +93,12 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
   const [newMemberIdentifier, setNewMemberIdentifier] = useState('');
   const [isLookingUpMember, setIsLookingUpMember] = useState(false);
 
+  const currentUserMember = members.find(m => m.id === currentUserId);
+  const isTemporaryUser = Boolean(
+    currentUserMember?.isTemporary || !currentUserMember?.username
+  );
+  const [addMemberMode, setAddMemberMode] = useState<'guest' | 'username'>('guest');
+
   // Settings inputs
   const [groupNameEdit, setGroupNameEdit] = useState(group.name);
   const [groupCurrencyEdit, setGroupCurrencyEdit] = useState(group.baseCurrency);
@@ -126,11 +135,13 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
   );
   const optimizedDebts = optimizeSettlements(balances, group.baseCurrency);
 
-  // Check if current user is owed money (is a creditor in at least one pending settlement)
-  const currentUserCreditorDebts = optimizedDebts.filter(
-    d => currentUserId && d.toMemberId === currentUserId
-  );
-  const canCurrentUserSettle = currentUserCreditorDebts.length > 0;
+  // Check if current user is owed money OR if any creditor is a guest participant (since guest participants have no account to log in)
+  const settleableDebts = optimizedDebts.filter(d => {
+    const creditor = members.find(m => m.id === d.toMemberId);
+    const isGuestCreditor = isGuestMember(creditor);
+    return (currentUserId && d.toMemberId === currentUserId) || isGuestCreditor;
+  });
+  const canCurrentUserSettle = settleableDebts.length > 0;
   const isGroupFullySettled = optimizedDebts.length === 0;
 
   const totalGroupSpent = groupExpenses.reduce((acc, e) => acc + e.baseAmount, 0);
@@ -190,6 +201,24 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
     const trimmed = newMemberIdentifier.trim();
     if (!trimmed) return;
 
+    const shouldLookupUsername =
+      !isTemporaryUser && (addMemberMode === 'username' || trimmed.startsWith('@'));
+
+    if (!shouldLookupUsername) {
+      const cleanName = trimmed.replace(/^@+/, '').trim();
+      if (!cleanName) return;
+      const guestMember = createGuestParticipant(cleanName, group.id, members.length);
+      onAddMemberToGroup(guestMember);
+      setNewMemberIdentifier('');
+      onShowToast(
+        language === 'fr'
+          ? `${guestMember.name} ajouté(e) comme invité`
+          : `Added ${guestMember.name} as guest`,
+        'success'
+      );
+      return;
+    }
+
     setIsLookingUpMember(true);
     try {
       const lookup = await cloudLookupRegisteredUser(trimmed);
@@ -198,7 +227,11 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
         return;
       }
 
-      const foundMember = lookup.member;
+      const foundMember: Member = {
+        ...lookup.member,
+        accountType: 'registered',
+        userId: lookup.member.uid ?? null,
+      };
       if (
         members.some(
           m =>
@@ -218,7 +251,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
       onAddMemberToGroup(foundMember);
       setNewMemberIdentifier('');
       onShowToast(
-        `Verified & added ${foundMember.name} to the group!`,
+        `Verified & added ${foundMember.name} (@${foundMember.username}) to the group!`,
         'success'
       );
     } finally {
@@ -568,9 +601,9 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                   id="record-settlement-quick-btn"
                   onClick={() =>
                     onOpenSettleModal(
-                      currentUserCreditorDebts[0]?.fromMemberId,
-                      currentUserId,
-                      currentUserCreditorDebts[0]?.amount
+                      settleableDebts[0]?.fromMemberId,
+                      settleableDebts[0]?.toMemberId,
+                      settleableDebts[0]?.amount
                     )
                   }
                   className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 active:scale-[0.96] transition-all cursor-pointer group shadow-2xs"
@@ -703,6 +736,8 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
 
                   const isCurrentUserCreditor = currentUserId && creditor.id === currentUserId;
                   const isCurrentUserDebtor = currentUserId && debtor.id === currentUserId;
+                  const isCreditorGuest = isGuestMember(creditor);
+                  const canSettleThisDebt = Boolean(isCurrentUserCreditor || isCreditorGuest);
 
                   return (
                     <div
@@ -754,7 +789,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                         </div>
                       </div>
 
-                      {isCurrentUserCreditor ? (
+                      {canSettleThisDebt ? (
                         <button
                           onClick={() =>
                             onOpenSettleModal(debtor.id, creditor.id, debt.amount)
@@ -838,31 +873,94 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
               </div>
             </div>
 
-            {/* Add Verified Registered Member Form */}
-            <form onSubmit={handleAddMember} className="space-y-1.5">
+            {/* Add People to Group Form */}
+            <form onSubmit={handleAddMember} className="space-y-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-xs font-semibold text-[var(--ink)]">
+                  {language === 'fr'
+                    ? 'Ajouter des personnes à votre groupe'
+                    : 'Add people to your group'}
+                </span>
+
+                {!isTemporaryUser && (
+                  <div className="inline-flex rounded-lg bg-[var(--surface-subtle)] p-0.5 border border-[var(--border)] text-[10px] font-semibold">
+                    <button
+                      type="button"
+                      onClick={() => setAddMemberMode('guest')}
+                      className={`px-2.5 py-0.5 rounded-md transition-colors cursor-pointer ${
+                        addMemberMode === 'guest'
+                          ? 'bg-[var(--surface)] text-[var(--ink)] shadow-2xs'
+                          : 'text-[var(--ink-secondary)]'
+                      }`}
+                    >
+                      {language === 'fr' ? 'Par nom (Invité)' : 'By Name (Guest)'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAddMemberMode('username')}
+                      className={`px-2.5 py-0.5 rounded-md transition-colors cursor-pointer ${
+                        addMemberMode === 'username'
+                          ? 'bg-[var(--surface)] text-[var(--ink)] shadow-2xs'
+                          : 'text-[var(--ink-secondary)]'
+                      }`}
+                    >
+                      @username
+                    </button>
+                  </div>
+                )}
+              </div>
+
               <div className="flex items-center gap-2">
                 <div className="flex items-center grow rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] focus-within:border-[var(--accent)] focus-within:ring-3 focus-within:ring-[var(--accent)]/10 transition-all overflow-hidden">
                   <span className="pl-2.5 pr-1.5 py-1.5 text-xs font-mono font-bold text-[var(--ink-muted)] bg-[var(--surface-subtle)] border-r border-[var(--border-subtle)] select-none flex items-center">
-                    <AtSign className="w-3.5 h-3.5" />
+                    {!isTemporaryUser && addMemberMode === 'username' ? (
+                      <AtSign className="w-3.5 h-3.5" />
+                    ) : (
+                      <UserPlus className="w-3.5 h-3.5" />
+                    )}
                   </span>
                   <input
+                    id="group-detail-add-member-input"
                     type="text"
-                    placeholder="Enter registered user's @username or User ID..."
+                    placeholder={
+                      !isTemporaryUser && addMemberMode === 'username'
+                        ? "Enter registered user's @username..."
+                        : language === 'fr'
+                        ? 'Entrer un nom (ex. Abc, Rahul, John)...'
+                        : 'Enter name (e.g. Abc, Rahul, John)...'
+                    }
                     value={newMemberIdentifier}
                     onChange={e => setNewMemberIdentifier(e.target.value)}
-                    className="w-full px-2.5 py-1.5 bg-transparent font-mono text-xs text-[var(--ink)] focus:outline-none"
+                    className="w-full px-2.5 py-1.5 bg-transparent text-xs text-[var(--ink)] focus:outline-none"
                   />
                 </div>
                 <button
+                  id="group-detail-add-member-btn"
                   type="submit"
                   disabled={isLookingUpMember}
-                  className="ui-btn-primary px-3 py-1.5 text-[11px] shrink-0"
+                  className="ui-btn-primary px-3.5 py-1.5 text-[11px] shrink-0"
                 >
-                  {isLookingUpMember ? 'Verifying DB...' : '+ Verify & Add'}
+                  {isLookingUpMember
+                    ? 'Verifying...'
+                    : !isTemporaryUser && addMemberMode === 'username'
+                    ? '+ Verify & Add'
+                    : '+ Add'}
                 </button>
               </div>
               <p className="text-[10px] text-[var(--ink-muted)]">
-                Only users who have Splitze and a registered unique <code className="font-mono text-[var(--accent)]">@username</code> in the database can be added, or they can join using invite code <strong>#{group.inviteCode}</strong>.
+                {!isTemporaryUser && addMemberMode === 'username' ? (
+                  <>
+                    Add a registered Splitze user by their <code className="font-mono text-[var(--accent)]">@username</code>, switch to <strong>By Name (Guest)</strong> to add someone without an account, or share invite code <strong>#{group.inviteCode}</strong>.
+                  </>
+                ) : language === 'fr' ? (
+                  <>
+                    Entrez un nom pour ajouter quelqu’un à ce groupe. Aucun compte Splitze n’est requis. Les personnes ayant l’application peuvent aussi rejoindre avec le code <strong>#{group.inviteCode}</strong>.
+                  </>
+                ) : (
+                  <>
+                    Enter a name to add someone to this group. They don&apos;t need a Splitze account. Real users can also join anytime using invite code <strong>#{group.inviteCode}</strong>.
+                  </>
+                )}
               </p>
             </form>
 
@@ -873,6 +971,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                   (Boolean(m.uid) && Boolean(group.createdBy) && m.uid === group.createdBy) ||
                   ((!group.createdBy || group.createdBy === 'anonymous' || group.createdBy.startsWith('u_')) && idx === 0);
                 const isYou = Boolean(currentUserId) && m.id === currentUserId;
+                const isGuest = isGuestMember(m) && !isYou && !isGroupCreator;
                 return (
                   <div
                     key={m.id}
@@ -898,6 +997,11 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                           {isYou && (
                             <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-[var(--surface-subtle)] text-[var(--ink-secondary)]">
                               You
+                            </span>
+                          )}
+                          {isGuest && (
+                            <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-[var(--surface-subtle)] text-[var(--ink-secondary)] border border-[var(--border)]">
+                              Guest
                             </span>
                           )}
                         </div>
