@@ -633,13 +633,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             )}
           </section>
 
-          {/* SECTION 4: APP INSTALLATION (PWA) */}
-          <section id="settings-section-pwa" className="space-y-3 pt-4 border-t border-[var(--border-subtle)]">
-            <h3 className="text-xs font-semibold text-[var(--text-secondary)]">
-              App Installation & Offline Access
-            </h3>
-            <PWAInstallButton variant="settings" />
-          </section>
+          {/* SECTION 4: APP INSTALLATION (PWA) — Automatically hidden once installed */}
+          <PWAInstallButton variant="settings" />
 
           {/* SECTION 5: DATA BACKUP & TOOLS */}
           <section id="settings-section-data" className="space-y-3 pt-4 border-t border-[var(--border-subtle)]">
