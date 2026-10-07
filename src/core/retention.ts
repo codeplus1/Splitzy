@@ -47,6 +47,9 @@ export const RETENTION_PERIOD_OPTIONS: RetentionOption[] = [
 ];
 
 export const DEFAULT_RETENTION_PERIOD: RetentionPeriod = '15d';
+export const DEFAULT_RETENTION_OPTION: RetentionPeriod = DEFAULT_RETENTION_PERIOD;
+export const RETENTION_OPTIONS: RetentionOption[] = RETENTION_PERIOD_OPTIONS;
+export type GroupRetentionOption = RetentionPeriod;
 
 export function getRetentionDurationMs(
   period: RetentionPeriod | string | number | undefined

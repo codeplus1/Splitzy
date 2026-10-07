@@ -1,88 +1,85 @@
 import React, { useState } from 'react';
-import { X, Trash2, Users, AtSign, ArrowRight, Loader2, Check } from 'lucide-react';
-import {
-  Group,
-  Member,
-  SupportedLanguage,
-  CalendarType,
-} from '../types';
+import { X, Trash2, Users, AtSign } from 'lucide-react';
+import { Group, Member, SupportedLanguage, CalendarType, RetentionPeriod } from '../types';
+import { SUPPORTED_CURRENCIES } from '../core/currency';
 import { translate } from '../core/i18n';
-import { DEFAULT_RETENTION_OPTION } from '../core/retention';
 import { MemberAvatar } from './MemberAvatar';
-import {
-  cloudLookupRegisteredUser,
-  generateDefaultUsername,
-} from '../services/firebase';
+import { cloudLookupRegisteredUser } from '../services/firebase';
+import { DEFAULT_RETENTION_OPTION, RETENTION_PERIOD_OPTIONS } from '../core/retention';
 
 interface CreateGroupModalProps {
+  isOpen?: boolean;
   onClose: () => void;
-  onGroupCreated: (group: Group, initialMembers: Member[]) => void;
+  onGroupCreated: (newGroup: Group, newMembers: Member[]) => void;
   currentUserMember?: Member;
   language: SupportedLanguage;
-  defaultCurrency?: string;
-  defaultCalendar?: CalendarType;
 }
 
 export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
   onClose,
   onGroupCreated,
   currentUserMember,
-  language: currentAppLang,
-  defaultCurrency = 'NPR',
-  defaultCalendar = 'BS' as CalendarType,
+  language,
 }) => {
   const [groupName, setGroupName] = useState('');
+  const [baseCurrency, setBaseCurrency] = useState('NPR');
+  const [preferredCalendar, setPreferredCalendar] = useState<CalendarType>('BS');
+  const [retentionPeriod, setRetentionPeriod] = useState<RetentionPeriod>(DEFAULT_RETENTION_OPTION);
 
-  // Only include the current user (Group Creator) by default.
-  const ownerEntry: Member = {
-    id: currentUserMember?.id || 'm_owner',
-    username:
-      currentUserMember?.username ||
-      generateDefaultUsername(currentUserMember?.name || 'You', currentUserMember?.uid),
-    uid: currentUserMember?.uid,
-    name: currentUserMember?.name || 'You',
-    avatar: currentUserMember?.avatar || '👨‍💻',
-    color: currentUserMember?.color || '#059669',
-    createdAt: currentUserMember?.createdAt || new Date().toISOString(),
-  };
+  const ownerEntry: Member & { isOwner?: boolean } = currentUserMember
+    ? {
+        ...currentUserMember,
+        avatar: currentUserMember.avatar || '👨‍💻',
+        color: currentUserMember.color || '#101D2D',
+        isOwner: true,
+      }
+    : {
+        id: `m_owner_${Date.now()}`,
+        name: 'Me',
+        avatar: '👨‍💻',
+        color: '#101D2D',
+        createdAt: new Date().toISOString(),
+        isOwner: true,
+      };
 
-  const [membersList, setMembersList] = useState<Member[]>([ownerEntry]);
+  // Dynamic additional member list (owner is automatically included)
+  const [members, setMembers] = useState<(Member & { isOwner?: boolean })[]>([ownerEntry]);
+
   const [newMemberIdentifier, setNewMemberIdentifier] = useState('');
   const [isLookingUp, setIsLookingUp] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isFrench = language === 'fr';
 
   const handleAddMember = async () => {
     if (isLookingUp) return;
     const trimmed = newMemberIdentifier.trim();
     if (!trimmed) return;
 
-    setErrorMsg(null);
     setIsLookingUp(true);
-
+    setErrorMessage(null);
     try {
       const lookup = await cloudLookupRegisteredUser(trimmed);
       if (!lookup.found || !lookup.member) {
-        setErrorMsg(lookup.message);
+        setErrorMessage(lookup.message);
         return;
       }
 
-      const verifiedUser = lookup.member;
+      const foundMember = lookup.member;
       if (
-        membersList.some(
+        members.some(
           m =>
-            m.id === verifiedUser.id ||
+            m.id === foundMember.id ||
             (m.username &&
-              verifiedUser.username &&
-              m.username.toLowerCase() === verifiedUser.username.toLowerCase())
+              foundMember.username &&
+              m.username.toLowerCase() === foundMember.username.toLowerCase())
         )
       ) {
-        setErrorMsg(
-          `@${verifiedUser.username || verifiedUser.name} is already added to this group.`
-        );
+        setErrorMessage(`${foundMember.name} is already in this list.`);
         return;
       }
 
-      setMembersList(prev => [...prev, verifiedUser]);
+      setMembers([...members, foundMember]);
       setNewMemberIdentifier('');
     } finally {
       setIsLookingUp(false);
@@ -90,29 +87,46 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
   };
 
   const handleRemoveMember = (id: string) => {
-    if (membersList.length <= 1) return;
-    setMembersList(prev => prev.filter(m => m.id !== id));
+    if (id === ownerEntry.id) return;
+    setMembers(members.filter(m => m.id !== id));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setErrorMsg(null);
+    if (isSubmitting || isLookingUp) return;
+    setErrorMessage(null);
 
     if (!groupName.trim()) {
-      setErrorMsg('Please enter a group name.');
+      setErrorMessage('Please provide a group name.');
       return;
     }
 
-    let effectiveMembers = [...membersList];
+    let effectiveMembers = [...members];
+    const pendingIdentifier = newMemberIdentifier.trim();
+    if (pendingIdentifier) {
+      setIsLookingUp(true);
+      const lookup = await cloudLookupRegisteredUser(pendingIdentifier);
+      setIsLookingUp(false);
+      if (!lookup.found || !lookup.member) {
+        setErrorMessage(lookup.message);
+        return;
+      }
+      if (!effectiveMembers.some(m => m.id === lookup.member!.id)) {
+        effectiveMembers.push(lookup.member);
+      }
+    }
+
+    setIsSubmitting(true);
+
     if (effectiveMembers.length === 0) {
       effectiveMembers = [ownerEntry];
     }
 
-    const memberUids: string[] = Array.from(
+    const memberUids = Array.from(
       new Set(
         effectiveMembers
           .map(m => m.uid)
-          .filter((u): u is string => typeof u === 'string' && u.length > 0)
+          .filter((u): u is string => Boolean(u))
       )
     );
 
@@ -120,15 +134,12 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
     const newGroup: Group = {
       id: groupId,
       name: groupName.trim(),
-      baseCurrency: defaultCurrency,
-      preferredCalendar: defaultCalendar,
-      language: currentAppLang,
+      baseCurrency,
+      preferredCalendar,
+      language,
       memberUserIds: memberUids.length > 0 ? memberUids : undefined,
+      retentionPeriod,
       settled: false,
-      settledAt: null,
-      retentionOption: DEFAULT_RETENTION_OPTION,
-      scheduledDeleteAt: null,
-      keepGroup: false,
       createdAt: new Date().toISOString(),
     };
 
@@ -139,7 +150,6 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
       name: m.name.trim(),
       avatar: m.avatar,
       color: m.color,
-      groupId,
       createdAt: m.createdAt || new Date().toISOString(),
     }));
 
@@ -155,185 +165,207 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
     >
       <div
         id="create-group-modal-card"
-        className="ui-modal-card max-w-[460px]"
+        className="ui-modal-card max-w-md"
         onClick={e => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="px-6 py-4 border-b border-[var(--border)] flex items-center justify-between gap-3 bg-[var(--surface)]">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-9 h-9 rounded-xl bg-[var(--surface-subtle)] text-[var(--ink)] flex items-center justify-center border border-[var(--border)] shrink-0">
-              <Users className="w-4 h-4 text-[var(--accent)]" />
+        <div className="ui-modal-header">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-[var(--accent-soft)] text-[var(--accent)] flex items-center justify-center font-semibold border border-[var(--accent-border)]">
+              <Users className="w-4 h-4" />
             </div>
-            <div className="min-w-0">
-              <h2 className="text-[15px] font-bold font-display text-[var(--ink)] tracking-tight leading-tight">
-                {translate(currentAppLang, 'createGroup')}
-              </h2>
-              <p className="text-xs text-[var(--ink-muted)] mt-0.5 truncate">
-                Defaults · {defaultCurrency} · {defaultCalendar} Calendar
-              </p>
-            </div>
+            <h2 className="text-base font-bold font-display tracking-tight text-[var(--ink)]">
+              {translate(language, 'createGroup')}
+            </h2>
           </div>
           <button
-            type="button"
             onClick={onClose}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--ink-secondary)] hover:bg-[var(--surface-subtle)] hover:text-[var(--ink)] transition-colors cursor-pointer shrink-0"
+            className="p-1.5 rounded-xl text-[var(--ink-secondary)] hover:bg-[var(--surface-subtle)] hover:text-[var(--ink)] transition-colors cursor-pointer"
             aria-label="Close"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
-          {errorMsg && (
-            <div className="px-3.5 py-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/80 text-rose-700 dark:text-rose-300 text-xs font-medium leading-relaxed">
-              {errorMsg}
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+          {errorMessage && (
+            <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs">
+              {errorMessage}
             </div>
           )}
 
           {/* Group Name */}
-          <div className="space-y-1.5">
-            <label
-              htmlFor="create-group-name-input"
-              className="text-xs font-semibold text-[var(--ink)] flex items-center justify-between"
-            >
-              <span>{translate(currentAppLang, 'groupName')}</span>
-              <span className="text-[11px] font-normal text-[var(--ink-muted)]">Required</span>
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-[var(--ink-secondary)]">
+              Group Name *
             </label>
             <input
               id="create-group-name-input"
               type="text"
               required
-              autoFocus
-              placeholder="e.g. Pokhara Trip, Flat 402 Rent, Weekend Dinner"
+              placeholder="e.g. Pokhara Trip, Flat 402 Rent, Goa Vacation..."
               value={groupName}
               onChange={e => setGroupName(e.target.value)}
-              className="w-full h-10 px-3.5 rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[13px] font-medium text-[var(--ink)] placeholder:text-[var(--ink-muted)] focus:outline-none focus:border-[var(--accent)] focus:ring-3 focus:ring-[var(--accent-mint)]/20 transition-all"
+              className="ui-input"
             />
           </div>
 
-          {/* Members List & Direct Username Lookup */}
-          <div className="pt-4 border-t border-[var(--border-subtle)] space-y-3">
-            <div className="flex items-baseline justify-between">
-              <label className="text-xs font-semibold text-[var(--ink)]">
-                Participants <span className="font-mono text-[var(--ink-muted)] ml-0.5">({membersList.length})</span>
+          {/* Base Currency & Calendar Grid */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-semibold text-[var(--ink-secondary)] block mb-1">
+                {translate(language, 'baseCurrency')}
+              </label>
+              <select
+                id="create-group-currency-select"
+                value={baseCurrency}
+                onChange={e => setBaseCurrency(e.target.value)}
+                className="ui-input text-xs"
+              >
+                {SUPPORTED_CURRENCIES.map(c => (
+                  <option key={c.code} value={c.code}>
+                    {c.code} ({c.symbol})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-[var(--ink-secondary)] block mb-1">
+                {translate(language, 'calendarPref')}
+              </label>
+              <select
+                id="create-group-calendar-select"
+                value={preferredCalendar}
+                onChange={e => setPreferredCalendar(e.target.value as CalendarType)}
+                className="ui-input text-xs"
+              >
+                <option value="BS">Bikram Sambat (BS)</option>
+                <option value="AD">Gregorian (AD)</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Auto-Delete Retention After Settled */}
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-[var(--ink-secondary)] block">
+              {isFrench
+                ? 'Suppression auto après règlement complet'
+                : 'Auto-Delete After Group Settled'}
+            </label>
+            <select
+              id="create-group-retention-select"
+              value={retentionPeriod}
+              onChange={e => setRetentionPeriod(e.target.value as RetentionPeriod)}
+              className="ui-input text-xs"
+            >
+              {RETENTION_PERIOD_OPTIONS.map(opt => (
+                <option key={opt.value} value={opt.value}>
+                  {isFrench ? opt.labelFr : opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Members List */}
+          <div className="space-y-2 border-t border-[var(--border)] pt-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-[var(--ink)]">
+                Group Members ({members.length})
               </label>
               <span className="text-[11px] text-[var(--ink-muted)]">
-                Creator included automatically
+                {isFrench ? 'Vous êtes inclus automatiquement' : 'You are automatically included'}
               </span>
             </div>
 
-            {/* Clean Divider List (No nested box clutter) */}
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-subtle)]/45 divide-y divide-[var(--border-subtle)] max-h-44 overflow-y-auto">
-              {membersList.map((m, idx) => (
+            <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+              {members.map(m => (
                 <div
                   key={m.id}
-                  className="flex items-center justify-between px-3.5 py-2.5 gap-3"
+                  className="ui-subcard flex items-center justify-between p-2.5"
                 >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <MemberAvatar
-                      name={m.name}
-                      avatar={m.avatar}
-                      color={m.color}
-                      size="xs"
-                    />
-                    <div className="min-w-0 flex items-baseline gap-1.5 truncate">
-                      <span className="text-[13px] font-semibold text-[var(--ink)] truncate">
-                        {m.name}
+                  <div className="flex items-center gap-2 min-w-0">
+                    <MemberAvatar name={m.name} avatar={m.avatar} color={m.color} size="sm" />
+                    <span className="text-xs font-semibold text-[var(--ink)] truncate">
+                      {m.name}
+                    </span>
+                    {m.isOwner && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent-border)]">
+                        {isFrench ? 'Vous' : 'You'}
                       </span>
-                      {m.username && (
-                        <span className="text-[11px] font-mono text-[var(--ink-muted)] truncate">
-                          · @{m.username}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    {idx === 0 ? (
-                      <span className="text-[11px] font-medium text-[var(--ink-secondary)] flex items-center gap-1">
-                        <Check className="w-3 h-3 text-[#087F5B] dark:text-[#63E6BE]" />
-                        <span>Owner</span>
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveMember(m.id)}
-                        className="p-1.5 rounded-lg text-[var(--ink-muted)] hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors cursor-pointer"
-                        aria-label={`Remove ${m.name}`}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
                     )}
                   </div>
+                  {!m.isOwner && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveMember(m.id)}
+                      className="text-[var(--ink-muted)] hover:text-rose-500 p-1 transition-colors cursor-pointer"
+                      title="Remove member"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
 
-            {/* Add Registered User by Unique @username */}
-            <div className="space-y-1.5 pt-1">
-              <label
-                htmlFor="create-group-add-member-input"
-                className="text-[11px] font-semibold text-[var(--ink-secondary)] block"
-              >
-                Add friend by unique @username
-              </label>
+            {/* Add Registered Friends by @username */}
+            <div className="space-y-1 pt-1">
               <div className="flex items-center gap-2">
-                <div className="relative flex items-center grow">
-                  <AtSign className="w-3.5 h-3.5 text-[var(--ink-muted)] absolute left-3.5 pointer-events-none" />
+                <div className="flex items-center grow rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] focus-within:border-[var(--accent)] focus-within:ring-3 focus-within:ring-[var(--accent)]/10 transition-all overflow-hidden">
+                  <span className="pl-2.5 pr-1.5 py-1.5 text-xs font-mono font-bold text-[var(--ink-muted)] bg-[var(--surface-subtle)] border-r border-[var(--border-subtle)] select-none flex items-center">
+                    <AtSign className="w-3.5 h-3.5" />
+                  </span>
                   <input
-                    id="create-group-add-member-input"
                     type="text"
-                    placeholder="username"
+                    placeholder={
+                      isFrench
+                        ? 'Entrer le @username d’un utilisateur inscrit...'
+                        : "Enter registered user's @username (optional)..."
+                    }
                     value={newMemberIdentifier}
-                    onChange={e => setNewMemberIdentifier(e.target.value)}
+                    onChange={e => {
+                      setNewMemberIdentifier(e.target.value);
+                      if (errorMessage) setErrorMessage(null);
+                    }}
                     onKeyDown={e => {
                       if (e.key === 'Enter') {
                         e.preventDefault();
                         handleAddMember();
                       }
                     }}
-                    className="w-full h-9 pl-8 pr-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] font-mono text-xs text-[var(--ink)] placeholder:text-[var(--ink-muted)] focus:outline-none focus:border-[var(--accent)] focus:ring-3 focus:ring-[var(--accent-mint)]/20 transition-all"
+                    className="w-full px-2.5 py-1.5 bg-transparent text-xs font-mono text-[var(--ink)] focus:outline-none"
                   />
                 </div>
                 <button
                   type="button"
-                  disabled={isLookingUp || !newMemberIdentifier.trim()}
+                  disabled={isLookingUp}
                   onClick={handleAddMember}
-                  className="h-9 px-3.5 text-xs font-semibold rounded-xl bg-[var(--surface-subtle)] hover:bg-[var(--surface-hover)] text-[var(--ink)] border border-[var(--border)] transition-all cursor-pointer shrink-0 disabled:opacity-45 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+                  className="px-3 py-1.5 text-xs font-bold text-[var(--accent)] bg-[var(--accent-soft)] hover:opacity-90 rounded-lg border border-[var(--accent-border)] transition-colors cursor-pointer shrink-0"
                 >
-                  {isLookingUp ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Checking</span>
-                    </>
-                  ) : (
-                    <span>Add User</span>
-                  )}
+                  {isLookingUp ? '...' : '+ Verify'}
                 </button>
               </div>
-              <p className="text-[11px] text-[var(--ink-muted)] leading-normal">
-                Or create the group now and share its 6-character invite code later.
+              <p className="text-[10px] text-[var(--ink-muted)]">
+                Only registered Splitze users in the database can be added by <code className="font-mono">@username</code>, or invite them later via the group invite code.
               </p>
             </div>
           </div>
 
-          {/* Footer Actions */}
-          <div className="pt-3 border-t border-[var(--border-subtle)] flex items-center justify-end gap-2.5">
+          <div className="pt-3 flex items-center justify-end gap-2">
             <button
               type="button"
               onClick={onClose}
-              className="h-10 px-4 rounded-xl text-xs font-semibold text-[var(--ink-secondary)] hover:bg-[var(--surface-subtle)] hover:text-[var(--ink)] transition-colors cursor-pointer"
+              className="ui-btn-secondary px-4 py-2 text-xs"
             >
-              {translate(currentAppLang, 'cancel')}
+              {translate(language, 'cancel')}
             </button>
             <button
               id="create-group-submit-btn"
               type="submit"
-              className="ui-btn-primary h-10 px-5 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 shadow-xs"
+              disabled={isSubmitting}
+              className="ui-btn-primary px-5 py-2.5 text-xs shadow-xs"
             >
-              <span>{translate(currentAppLang, 'createGroup')}</span>
-              <ArrowRight className="w-3.5 h-3.5" />
+              {isSubmitting ? 'Creating...' : translate(language, 'createGroup')}
             </button>
           </div>
         </form>
