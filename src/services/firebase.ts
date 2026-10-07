@@ -1333,9 +1333,10 @@ export function subscribeToAccountStatus(
         doc(db, USER_DIRECTORY_COL, cleanUsername),
         snap => {
           if (isCancelled) return;
+          const isFromCache = snap.metadata.fromCache;
           if (!snap.exists()) {
             // If we previously saw the document or server confirms it doesn't exist, revoke immediately
-            if (seenExistingDoc || !snap.metadata.fromCache) {
+            if (seenExistingDoc || !isFromCache) {
               handleRevoked(
                 'ACCOUNT_DELETED',
                 `Your account (@${cleanUsername}) was deleted. You have been signed out.`
