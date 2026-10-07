@@ -8,6 +8,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromServer,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -19,6 +20,8 @@ import {
   getDocs,
   arrayUnion,
   Firestore,
+  DocumentReference,
+  DocumentSnapshot,
 } from 'firebase/firestore';
 import {
   getAuth,
@@ -60,6 +63,7 @@ import {
   saveLocalAccountCredential,
   getLocalAccountCredential,
   removeLocalAccountCredential,
+  purgeLocalAccountSession,
 } from './storage';
 
 // Suppress internal @firebase/firestore transient connection retry logs so they don't trigger false error overlays
@@ -244,6 +248,10 @@ export function resetLookupRateLimits(): void {
 
 export function isValidInviteCodeFormat(code: string): boolean {
   return STRICT_INVITE_CODE_REGEX.test(code.trim().toUpperCase());
+}
+
+export function isValidVerifierHash(hash?: string): boolean {
+  return typeof hash === 'string' && /^[a-fA-F0-9]{64}$/.test(hash);
 }
 
 /**
@@ -829,6 +837,14 @@ export async function cloudCreateGroup(
   currentUser?: { uid: string } | null
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const accountCheck = await verifyActiveAccountSession();
+    if (!accountCheck.valid) {
+      return {
+        success: false,
+        error: accountCheck.error || 'Account session is no longer valid.',
+      };
+    }
+
     const authUser = await ensureAuthUser();
     const realAuthUid = authUser?.uid || auth.currentUser?.uid;
     const fallbackUid = currentUser?.uid || 'anonymous';
@@ -920,6 +936,14 @@ export async function cloudUpdateGroup(
   fullGroup?: Group | null
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const accountCheck = await verifyActiveAccountSession();
+    if (!accountCheck.valid) {
+      return {
+        success: false,
+        error: accountCheck.error || 'Account session is no longer valid.',
+      };
+    }
+
     const authUser = await ensureAuthUser();
     const realAuthUid = authUser?.uid || auth.currentUser?.uid;
     const isLocalFallback = (uid?: string) =>
@@ -983,6 +1007,14 @@ export async function cloudDeleteGroup(
   inviteCodeToDelete?: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const accountCheck = await verifyActiveAccountSession();
+    if (!accountCheck.valid) {
+      return {
+        success: false,
+        error: accountCheck.error || 'Account session is no longer valid.',
+      };
+    }
+
     await ensureAuthUser();
 
     // 1. Delete dependent child documents first while /groups/{groupId} still exists
@@ -1047,6 +1079,330 @@ export function generateDefaultUsername(name: string, uid?: string): string {
 }
 
 /**
+ * Fetches a document directly from the shared Firestore server first when online
+ * (bypassing stale IndexedDB cache across platforms), falling back to local cache only if offline.
+ */
+async function fetchServerFirstDoc<T>(
+  ref: DocumentReference<T>
+): Promise<DocumentSnapshot<T>> {
+  if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+    try {
+      return await getDocFromServer(ref);
+    } catch {
+      return await getDoc(ref);
+    }
+  }
+  return await getDoc(ref);
+}
+
+export type AccountRevocationReason =
+  | 'ACCOUNT_DELETED'
+  | 'SESSION_REVOKED'
+  | 'ACCOUNT_NOT_FOUND';
+
+export interface AccountRevocationEvent {
+  reason: AccountRevocationReason;
+  username?: string;
+  memberId?: string;
+  message: string;
+}
+
+type AccountRevocationListener = (event: AccountRevocationEvent) => void;
+const accountRevocationListeners = new Set<AccountRevocationListener>();
+let isRevokingAccount = false;
+
+/**
+ * Registers a listener invoked immediately whenever the shared backend reports that
+ * the current user's account has been deleted or its session version revoked on any platform.
+ */
+export function onGlobalAccountRevoked(listener: AccountRevocationListener): () => void {
+  accountRevocationListeners.add(listener);
+  return () => {
+    accountRevocationListeners.delete(listener);
+  };
+}
+
+/**
+ * Purges all local credentials, session storage, and auth tokens on this platform
+ * and notifies the UI to immediately log out and return to the onboarding screen.
+ */
+export function triggerGlobalAccountRevocation(event: AccountRevocationEvent): void {
+  if (isRevokingAccount) return;
+  isRevokingAccount = true;
+  try {
+    purgeLocalAccountSession(event.username);
+    if (auth.currentUser) {
+      auth.signOut().catch(() => {});
+    }
+    accountRevocationListeners.forEach(listener => {
+      try {
+        listener(event);
+      } catch (err) {
+        console.error('Account revocation listener error:', err);
+      }
+    });
+  } finally {
+    setTimeout(() => {
+      isRevokingAccount = false;
+    }, 500);
+  }
+}
+
+/**
+ * Centralized backend-authoritative account verification middleware.
+ * Called on app startup, tab focus, and BEFORE every protected database operation:
+ * 1. Validates the current user identity.
+ * 2. Queries the shared Firestore backend (`/userDirectory/{username}` and `/members/{memberId}`)
+ *    bypassing stale local cache.
+ * 3. Rejects the request and forces immediate logout if the account is marked `status: 'deleted'`,
+ *    no longer exists on the server, or has a revoked `sessionVersion`.
+ */
+export async function verifyActiveAccountSession(
+  memberOverride?: Member | null
+): Promise<{
+  valid: boolean;
+  reason?: AccountRevocationReason;
+  error?: string;
+  serverMember?: Member;
+}> {
+  try {
+    const localState = loadAppState();
+    const activeMember =
+      memberOverride ||
+      localState.userProfile ||
+      localState.members.find(m => m.id === localState.currentUserId);
+
+    // Unauthenticated or Temporary Use (guest) mode does not use a registered account
+    if (!activeMember || activeMember.isTemporary) {
+      return { valid: true };
+    }
+
+    const cleanUsername = activeMember.username
+      ? normalizeUsername(activeMember.username)
+      : '';
+
+    // Check local tombstone first
+    if (activeMember.status === 'deleted') {
+      const msg = `Account ${cleanUsername ? '@' + cleanUsername : activeMember.name} has been deleted.`;
+      triggerGlobalAccountRevocation({
+        reason: 'ACCOUNT_DELETED',
+        username: cleanUsername || undefined,
+        memberId: activeMember.id,
+        message: msg,
+      });
+      return { valid: false, reason: 'ACCOUNT_DELETED', error: msg };
+    }
+
+    if (cleanUsername) {
+      const localCred = getLocalAccountCredential(cleanUsername);
+      if (localCred?.status === 'deleted') {
+        const msg = `Account @${cleanUsername} has been deleted.`;
+        triggerGlobalAccountRevocation({
+          reason: 'ACCOUNT_DELETED',
+          username: cleanUsername,
+          memberId: activeMember.id,
+          message: msg,
+        });
+        return { valid: false, reason: 'ACCOUNT_DELETED', error: msg };
+      }
+    }
+
+    // If device is offline, allow queued offline operation unless locally marked deleted
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return { valid: true };
+    }
+
+    await ensureAuthUser();
+
+    // 1. Authoritative check on `/userDirectory/{username}` from the live server
+    if (cleanUsername && cleanUsername.length >= 2) {
+      const dirRef = doc(db, USER_DIRECTORY_COL, cleanUsername);
+      const dirSnap = await fetchServerFirstDoc(dirRef);
+
+      if (!dirSnap.exists()) {
+        const msg = `Your account (@${cleanUsername}) was deleted or no longer exists. You have been signed out.`;
+        triggerGlobalAccountRevocation({
+          reason: 'ACCOUNT_NOT_FOUND',
+          username: cleanUsername,
+          memberId: activeMember.id,
+          message: msg,
+        });
+        return { valid: false, reason: 'ACCOUNT_NOT_FOUND', error: msg };
+      }
+
+      const dirData = dirSnap.data();
+
+      // Check if account is marked deleted or replaced by a new registration with a different memberId
+      if (
+        dirData.status === 'deleted' ||
+        (dirData.memberId && dirData.memberId !== activeMember.id)
+      ) {
+        const msg = `Your account (@${cleanUsername}) was deleted on another platform. You have been signed out.`;
+        triggerGlobalAccountRevocation({
+          reason: 'ACCOUNT_DELETED',
+          username: cleanUsername,
+          memberId: activeMember.id,
+          message: msg,
+        });
+        return { valid: false, reason: 'ACCOUNT_DELETED', error: msg };
+      }
+
+      // Check sessionVersion revocation
+      if (
+        typeof dirData.sessionVersion === 'number' &&
+        typeof activeMember.sessionVersion === 'number' &&
+        dirData.sessionVersion > activeMember.sessionVersion
+      ) {
+        const msg = `Your session for @${cleanUsername} has expired or been revoked. Please log in again.`;
+        triggerGlobalAccountRevocation({
+          reason: 'SESSION_REVOKED',
+          username: cleanUsername,
+          memberId: activeMember.id,
+          message: msg,
+        });
+        return { valid: false, reason: 'SESSION_REVOKED', error: msg };
+      }
+    }
+
+    // 2. Also verify `/members/{memberId}` if readable
+    if (activeMember.id) {
+      try {
+        const memSnap = await fetchServerFirstDoc(doc(db, MEMBERS_COL, activeMember.id));
+        if (memSnap.exists()) {
+          const memData = memSnap.data() as Member;
+          if (memData.status === 'deleted') {
+            const msg = `Your account (${activeMember.name}) was deleted on another platform. You have been signed out.`;
+            triggerGlobalAccountRevocation({
+              reason: 'ACCOUNT_DELETED',
+              username: cleanUsername || undefined,
+              memberId: activeMember.id,
+              message: msg,
+            });
+            return { valid: false, reason: 'ACCOUNT_DELETED', error: msg };
+          }
+        }
+      } catch {
+        // Ignore if member doc is not readable by current anonymous token
+      }
+    }
+
+    return { valid: true };
+  } catch (err) {
+    console.warn('verifyActiveAccountSession check notice:', err);
+    return { valid: true };
+  }
+}
+
+/**
+ * Real-time cross-platform account status & session listener.
+ * Subscribes to `/userDirectory/{username}` and `/members/{memberId}` so that if the user
+ * deletes their account on Platform 1, Platform 2 and Platform 3 immediately detect
+ * the deletion in real time and force-logout without waiting for a page reload.
+ */
+export function subscribeToAccountStatus(
+  member: Member,
+  onRevoked?: (event: AccountRevocationEvent) => void
+): () => void {
+  if (!member || member.isTemporary) {
+    return () => {};
+  }
+
+  let isCancelled = false;
+  const cleanUsername = member.username ? normalizeUsername(member.username) : '';
+  const unsubs: Array<() => void> = [];
+
+  const handleRevoked = (reason: AccountRevocationReason, message: string) => {
+    if (isCancelled) return;
+    isCancelled = true;
+    const event: AccountRevocationEvent = {
+      reason,
+      username: cleanUsername || undefined,
+      memberId: member.id,
+      message,
+    };
+    triggerGlobalAccountRevocation(event);
+    onRevoked?.(event);
+  };
+
+  ensureAuthUser().then(() => {
+    if (isCancelled) return;
+
+    if (cleanUsername && cleanUsername.length >= 2) {
+      let seenExistingDoc = false;
+      const unsubDir = onSnapshot(
+        doc(db, USER_DIRECTORY_COL, cleanUsername),
+        snap => {
+          if (isCancelled) return;
+          if (!snap.exists()) {
+            // If we previously saw the document or server confirms it doesn't exist, revoke immediately
+            if (seenExistingDoc || !snap.metadata.fromCache) {
+              handleRevoked(
+                'ACCOUNT_DELETED',
+                `Your account (@${cleanUsername}) was deleted. You have been signed out.`
+              );
+            }
+            return;
+          }
+          seenExistingDoc = true;
+          const data = snap.data();
+          if (
+            data.status === 'deleted' ||
+            (data.memberId && data.memberId !== member.id)
+          ) {
+            handleRevoked(
+              'ACCOUNT_DELETED',
+              `Your account (@${cleanUsername}) was deleted on another platform. You have been signed out.`
+            );
+            return;
+          }
+          if (
+            typeof data.sessionVersion === 'number' &&
+            typeof member.sessionVersion === 'number' &&
+            data.sessionVersion > member.sessionVersion
+          ) {
+            handleRevoked(
+              'SESSION_REVOKED',
+              `Your session for @${cleanUsername} was revoked. Please sign in again.`
+            );
+          }
+        },
+        () => {
+          // Ignore transient listener errors
+        }
+      );
+      unsubs.push(unsubDir);
+    }
+
+    if (member.id) {
+      const unsubMem = onSnapshot(
+        doc(db, MEMBERS_COL, member.id),
+        snap => {
+          if (isCancelled) return;
+          if (snap.exists()) {
+            const data = snap.data() as Member;
+            if (data.status === 'deleted') {
+              handleRevoked(
+                'ACCOUNT_DELETED',
+                `Your account (@${cleanUsername || member.name}) was deleted on another platform. You have been signed out.`
+              );
+            }
+          }
+        },
+        () => {
+          // Ignore if rules restrict member read before auth token settles
+        }
+      );
+      unsubs.push(unsubMem);
+    }
+  });
+
+  return () => {
+    isCancelled = true;
+    unsubs.forEach(u => u());
+  };
+}
+
+/**
  * Updates the active authoritative UID in localStorage so the device syncs with a restored or claimed account.
  */
 export function setActiveAccountUid(uid: string, displayName = 'User'): AppUser {
@@ -1067,7 +1423,7 @@ export function setActiveAccountUid(uid: string, displayName = 'User'): AppUser 
 /**
  * Registers or updates the current user's profile and unique @username in Firestore
  * (`members` and `userDirectory` collections). Verifies that the username is not already
- * claimed by a different account.
+ * claimed by a different active account, and blocks stale sessions from resurrecting a deleted account.
  */
 export async function cloudRegisterOrUpdateUserProfile(
   member: Member,
@@ -1102,10 +1458,11 @@ export async function cloudRegisterOrUpdateUserProfile(
       ? await hashPin(rawPassword.trim())
       : undefined;
 
-  // Check local credential registry first if registering a new account
+  // Check local credential registry first if registering a new account (only if active)
   if (
     isNewRegistration &&
     localExistingCred &&
+    localExistingCred.status !== 'deleted' &&
     localExistingCred.memberId &&
     localExistingCred.memberId !== member.id
   ) {
@@ -1125,84 +1482,161 @@ export async function cloudRegisterOrUpdateUserProfile(
       getCachedUserIdentity().uid ||
       member.id;
 
-    const updatedMember: Member = sanitizeForFirestore({
-      ...member,
-      username: cleanUsername,
-      uid: effectiveUid,
-      passwordHash:
-        computedPasswordHash || member.passwordHash || localExistingCred?.passwordHash,
-      pinHash:
-        member.pinHash ||
-        localPinHash ||
-        localExistingCred?.pinHash ||
-        computedPinHashFromFourDigitPassword,
-    });
+    let resolvedMemberId = member.id;
+    let resolvedUid = effectiveUid;
+    let resolvedSessionVersion = member.sessionVersion || 1;
 
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const offlineMember: Member = sanitizeForFirestore({
+        ...member,
+        id: resolvedMemberId,
+        username: cleanUsername,
+        uid: resolvedUid,
+        status: 'active',
+        sessionVersion: resolvedSessionVersion,
+        passwordHash:
+          computedPasswordHash || member.passwordHash || localExistingCred?.passwordHash,
+        pinHash:
+          member.pinHash ||
+          localPinHash ||
+          localExistingCred?.pinHash ||
+          computedPinHashFromFourDigitPassword,
+      });
       saveLocalAccountCredential({
         username: cleanUsername,
-        memberId: updatedMember.id,
-        uid: effectiveUid,
-        name: updatedMember.name,
-        avatar: updatedMember.avatar,
-        color: updatedMember.color || '#101D2D',
-        passwordHash: updatedMember.passwordHash,
-        pinHash: updatedMember.pinHash,
+        memberId: offlineMember.id,
+        uid: resolvedUid,
+        name: offlineMember.name,
+        avatar: offlineMember.avatar,
+        color: offlineMember.color || '#101D2D',
+        passwordHash: offlineMember.passwordHash,
+        pinHash: offlineMember.pinHash,
+        status: 'active',
+        sessionVersion: resolvedSessionVersion,
         updatedAt: new Date().toISOString(),
       });
-      return { success: true, member: updatedMember };
+      return { success: true, member: offlineMember };
     }
 
     const dirRef = doc(db, USER_DIRECTORY_COL, cleanUsername);
-    const existingSnap = await getDoc(dirRef);
+    const existingSnap = await fetchServerFirstDoc(dirRef);
     if (existingSnap.exists()) {
       const data = existingSnap.data();
-      const isDifferentAccount =
-        isNewRegistration &&
-        data.memberId !== member.id &&
-        data.uid !== effectiveUid;
-      if (isDifferentAccount) {
+
+      // CRITICAL: If this is NOT a brand-new registration (e.g. a stale local session on Platform 2 or 3
+      // trying to sync or update its profile), and the backend says the account is DELETED or belongs
+      // to a newer registration (`data.memberId !== member.id`), immediately revoke and reject!
+      if (!isNewRegistration && data.status === 'deleted') {
+        const msg = `Account @${cleanUsername} was deleted on another platform.`;
+        triggerGlobalAccountRevocation({
+          reason: 'ACCOUNT_DELETED',
+          username: cleanUsername,
+          memberId: member.id,
+          message: msg,
+        });
         return {
           success: false,
-          usernameTaken: true,
-          error: `Username "@${cleanUsername}" is already registered. Please log in with your password (or 4-digit App Lock PIN for existing users), or choose a different @username.`,
+          error: msg,
         };
       }
-      if (
-        !isNewRegistration &&
-        data.memberId !== member.id &&
-        data.uid !== effectiveUid
-      ) {
-        return {
-          success: false,
-          usernameTaken: true,
-          error: `Username "@${cleanUsername}" is already registered. Please log in with your password (or 4-digit App Lock PIN for existing users), or choose a different @username.`,
-        };
-      }
-      // Always adopt the existing authoritative memberId when updating/claiming own account
-      if (data.memberId && data.uid === effectiveUid) {
-        updatedMember.id = data.memberId;
-      }
-      // Preserve existing cloud passwordHash / pinHash if not explicitly provided
-      if (!updatedMember.passwordHash && data.passwordHash) {
-        updatedMember.passwordHash = data.passwordHash;
-      }
-      if (!updatedMember.pinHash && data.pinHash) {
-        updatedMember.pinHash = data.pinHash;
+
+      if (data.status === 'deleted' && isNewRegistration) {
+        // Handle was previously deleted; allow brand-new registration with a fresh memberId and bumped sessionVersion
+        if (data.memberId === resolvedMemberId) {
+          resolvedMemberId = `m_owner_${cleanUsername}_${Date.now().toString(36)}`;
+        }
+        resolvedSessionVersion = (typeof data.sessionVersion === 'number' ? data.sessionVersion : 1) + 1;
+      } else {
+        const isDifferentAccount =
+          isNewRegistration &&
+          data.memberId !== member.id &&
+          data.uid !== effectiveUid;
+        if (isDifferentAccount) {
+          return {
+            success: false,
+            usernameTaken: true,
+            error: `Username "@${cleanUsername}" is already registered. Please log in with your password (or 4-digit App Lock PIN for existing users), or choose a different @username.`,
+          };
+        }
+        if (
+          !isNewRegistration &&
+          data.memberId !== member.id &&
+          data.uid !== effectiveUid
+        ) {
+          return {
+            success: false,
+            usernameTaken: true,
+            error: `Username "@${cleanUsername}" is already registered. Please log in with your password (or 4-digit App Lock PIN for existing users), or choose a different @username.`,
+          };
+        }
+        // Always adopt the existing canonical memberId and uid across all platforms
+        if (data.memberId) {
+          resolvedMemberId = data.memberId;
+        }
+        if (data.uid) {
+          resolvedUid = data.uid;
+        }
+        if (typeof data.sessionVersion === 'number') {
+          resolvedSessionVersion = Math.max(resolvedSessionVersion, data.sessionVersion);
+        }
       }
     }
 
-    // Always persist credentials locally BEFORE cloud commit so logging out and logging back in on this device is 100% instant and reliable
+    const existingDirData = existingSnap.exists() ? existingSnap.data() : null;
+    const isReplacingDeleted = existingDirData?.status === 'deleted' && isNewRegistration;
+
+    const updatedMember: Member = sanitizeForFirestore({
+      ...member,
+      id: resolvedMemberId,
+      username: cleanUsername,
+      uid: resolvedUid,
+      status: 'active',
+      sessionVersion: resolvedSessionVersion,
+      passwordHash:
+        computedPasswordHash ||
+        member.passwordHash ||
+        (!isReplacingDeleted ? existingDirData?.passwordHash : undefined) ||
+        (!isReplacingDeleted ? localExistingCred?.passwordHash : undefined),
+      pinHash:
+        member.pinHash ||
+        localPinHash ||
+        (!isReplacingDeleted ? existingDirData?.pinHash : undefined) ||
+        (!isReplacingDeleted ? localExistingCred?.pinHash : undefined) ||
+        computedPinHashFromFourDigitPassword,
+    });
+
+    // Persist credentials locally with active status and sessionVersion
     saveLocalAccountCredential({
       username: cleanUsername,
       memberId: updatedMember.id,
-      uid: effectiveUid,
+      uid: resolvedUid,
       name: updatedMember.name,
       avatar: updatedMember.avatar,
       color: updatedMember.color || '#101D2D',
       passwordHash: updatedMember.passwordHash,
       pinHash: updatedMember.pinHash,
+      status: 'active',
+      sessionVersion: resolvedSessionVersion,
       updatedAt: new Date().toISOString(),
+    });
+
+    const directoryPayload = sanitizeForFirestore({
+      username: cleanUsername,
+      memberId: updatedMember.id,
+      uid: auth.currentUser?.uid || resolvedUid,
+      name: updatedMember.name,
+      avatar: updatedMember.avatar,
+      color: updatedMember.color || '#101D2D',
+      passwordHash: updatedMember.passwordHash,
+      pinHash: updatedMember.pinHash,
+      status: 'active',
+      sessionVersion: resolvedSessionVersion,
+      updatedAt: new Date().toISOString(),
+    });
+
+    const memberPayload = sanitizeForFirestore({
+      ...updatedMember,
+      uid: auth.currentUser?.uid || resolvedUid,
     });
 
     try {
@@ -1215,51 +1649,22 @@ export async function cloudRegisterOrUpdateUserProfile(
         }
       }
 
-      batch.set(doc(db, MEMBERS_COL, updatedMember.id), sanitizeForFirestore(updatedMember), {
+      batch.set(doc(db, MEMBERS_COL, updatedMember.id), memberPayload, {
         merge: true,
       });
-      batch.set(
-        dirRef,
-        sanitizeForFirestore({
-          username: cleanUsername,
-          memberId: updatedMember.id,
-          uid: effectiveUid,
-          name: updatedMember.name,
-          avatar: updatedMember.avatar,
-          color: updatedMember.color || '#101D2D',
-          passwordHash: updatedMember.passwordHash,
-          pinHash: updatedMember.pinHash,
-          updatedAt: new Date().toISOString(),
-        }),
-        { merge: true }
-      );
+      batch.set(dirRef, directoryPayload);
 
       await batch.commit();
     } catch (commitErr) {
-      // Fallback individual writes in case one collection has legacy fields
       try {
-        await setDoc(doc(db, MEMBERS_COL, updatedMember.id), sanitizeForFirestore(updatedMember), {
+        await setDoc(doc(db, MEMBERS_COL, updatedMember.id), memberPayload, {
           merge: true,
         });
       } catch {
         // Ignore
       }
       try {
-        await setDoc(
-          dirRef,
-          sanitizeForFirestore({
-            username: cleanUsername,
-            memberId: updatedMember.id,
-            uid: effectiveUid,
-            name: updatedMember.name,
-            avatar: updatedMember.avatar,
-            color: updatedMember.color || '#101D2D',
-            passwordHash: updatedMember.passwordHash,
-            pinHash: updatedMember.pinHash,
-            updatedAt: new Date().toISOString(),
-          }),
-          { merge: true }
-        );
+        await setDoc(dirRef, directoryPayload);
       } catch {
         console.warn('userDirectory write notice:', commitErr);
       }
@@ -1287,10 +1692,11 @@ export async function cloudRegisterOrUpdateUserProfile(
 }
 
 /**
- * Authenticates an existing @username account using either:
- * 1. The user's Account Password (if `passwordHash` is already set on the account), OR
- * 2. For already-registered users who do not have a password set yet: their 4-digit App Lock PIN
- *    (which verifies their identity for now and then requires them to create a password for future logins).
+ * Authenticates an existing @username account across any of the 3 platforms using the shared
+ * Firestore backend as the single source of truth:
+ * - Queries `/userDirectory/{username}` and `/members/{memberId}` directly from the server when online.
+ * - Immediately rejects login (and purges any stale local cache) if the account does not exist or has `status === 'deleted'`.
+ * - Adopts the exact same canonical `memberId`, `uid`, and `sessionVersion` across all platforms.
  */
 export async function cloudLoginWithUsernameAndPassword(
   rawUsername: string,
@@ -1323,59 +1729,102 @@ export async function cloudLoginWithUsernameAndPassword(
     const authUser = await ensureAuthUser();
     const currentAuthUid =
       authUser?.uid || auth.currentUser?.uid || getCachedUserIdentity().uid;
+    const isOnline = typeof navigator === 'undefined' || navigator.onLine !== false;
 
     let dirData: Record<string, any> | null = null;
     let memberDocData: Record<string, any> | null = null;
-    if (typeof navigator === 'undefined' || navigator.onLine) {
+    let serverChecked = false;
+
+    if (isOnline) {
       try {
-        const dirSnap = await getDoc(doc(db, USER_DIRECTORY_COL, cleanUsername));
+        const dirSnap = await fetchServerFirstDoc(doc(db, USER_DIRECTORY_COL, cleanUsername));
+        serverChecked = true;
         if (dirSnap.exists()) {
           dirData = dirSnap.data();
           if (dirData?.memberId) {
             try {
-              const mSnap = await getDoc(doc(db, MEMBERS_COL, dirData.memberId));
+              const mSnap = await fetchServerFirstDoc(doc(db, MEMBERS_COL, dirData.memberId));
               if (mSnap.exists()) {
                 memberDocData = mSnap.data();
               }
             } catch {
-              // Ignore if member doc read is restricted
+              // Ignore if member doc read is restricted before login completes
             }
           }
         }
       } catch {
-        // Fallback to local credential cache
+        // Network error fallback
       }
     }
 
     const localCred = getLocalAccountCredential(cleanUsername);
+
+    // CRITICAL CENTRALIZED ACCOUNT CHECK:
+    // 1. If the account is marked `status === 'deleted'` in Firestore OR in local storage:
+    //    immediately purge local credentials and reject login across all platforms!
+    if (
+      dirData?.status === 'deleted' ||
+      memberDocData?.status === 'deleted' ||
+      localCred?.status === 'deleted'
+    ) {
+      removeLocalAccountCredential(cleanUsername);
+      return {
+        success: false,
+        error: `Account "@${cleanUsername}" has been permanently deleted and can no longer be accessed.`,
+      };
+    }
+
+    // 2. If online and the server confirms `/userDirectory/{username}` does not exist:
+    //    do NOT allow stale local credentials from another session to resurrect the account!
+    if (isOnline && serverChecked && !dirData) {
+      removeLocalAccountCredential(cleanUsername);
+      return {
+        success: false,
+        error: `Account "@${cleanUsername}" does not exist or has been deleted. Please create a new account.`,
+      };
+    }
+
     const storedPinHash = getStoredAppLockPinHash();
 
+    // Only use localCred if offline or if localCred matches the server's active memberId
+    const validLocalCred =
+      !isOnline || !dirData || !localCred?.memberId || localCred.memberId === dirData.memberId
+        ? localCred
+        : null;
+
     const merged = {
-      ...(localCred || {}),
+      ...(validLocalCred || {}),
       ...(memberDocData || {}),
       ...(dirData || {}),
       passwordHash:
         dirData?.passwordHash ||
         memberDocData?.passwordHash ||
-        localCred?.passwordHash,
+        validLocalCred?.passwordHash,
       pinHash:
         dirData?.pinHash ||
         memberDocData?.pinHash ||
-        localCred?.pinHash ||
+        validLocalCred?.pinHash ||
         storedPinHash,
     };
 
+    // Preserve the SAME canonical memberId and accountUid across all 3 platforms!
     const memberId: string =
       dirData?.memberId ||
       memberDocData?.id ||
-      localCred?.memberId ||
+      validLocalCred?.memberId ||
       `m_owner_${cleanUsername}`;
     const accountUid: string =
-      currentAuthUid ||
       dirData?.uid ||
       memberDocData?.uid ||
-      localCred?.uid ||
+      validLocalCred?.uid ||
+      currentAuthUid ||
       `u_${cleanUsername}`;
+    const sessionVersion: number =
+      typeof dirData?.sessionVersion === 'number'
+        ? dirData.sessionVersion
+        : typeof memberDocData?.sessionVersion === 'number'
+        ? memberDocData.sessionVersion
+        : validLocalCred?.sessionVersion || 1;
 
     const restoredMember: Member = {
       id: memberId,
@@ -1386,6 +1835,8 @@ export async function cloudLoginWithUsernameAndPassword(
       color: merged.color || '#101D2D',
       passwordHash: merged.passwordHash,
       pinHash: merged.pinHash || undefined,
+      status: 'active',
+      sessionVersion,
       createdAt: merged.updatedAt || new Date().toISOString(),
     };
 
@@ -1394,7 +1845,6 @@ export async function cloudLoginWithUsernameAndPassword(
     const candidatePinHash = isFourDigitInput ? await hashPin(trimmedSecret) : '';
 
     // Check if the user entered a password that matches ANY stored passwordHash or pinHash
-    // (supports when the user's password and 4-digit App Lock PIN are identical!)
     const matchesStoredPassword = Boolean(
       (dirData?.passwordHash &&
         (candidatePasswordHash === dirData.passwordHash ||
@@ -1402,28 +1852,28 @@ export async function cloudLoginWithUsernameAndPassword(
         (memberDocData?.passwordHash &&
           (candidatePasswordHash === memberDocData.passwordHash ||
             (candidatePinHash && candidatePinHash === memberDocData.passwordHash))) ||
-        (localCred?.passwordHash &&
-          (candidatePasswordHash === localCred.passwordHash ||
-            (candidatePinHash && candidatePinHash === localCred.passwordHash))) ||
+        (validLocalCred?.passwordHash &&
+          (candidatePasswordHash === validLocalCred.passwordHash ||
+            (candidatePinHash && candidatePinHash === validLocalCred.passwordHash))) ||
         (merged.passwordHash &&
           (candidatePasswordHash === merged.passwordHash ||
             (candidatePinHash && candidatePinHash === merged.passwordHash)))
     );
 
-    // Check if the user entered a 4-digit PIN (or password identical to their PIN) that matches stored pinHash
     const matchesStoredPin = Boolean(
       (dirData?.pinHash &&
         (candidatePinHash === dirData.pinHash || candidatePasswordHash === dirData.pinHash)) ||
         (memberDocData?.pinHash &&
           (candidatePinHash === memberDocData.pinHash ||
             candidatePasswordHash === memberDocData.pinHash)) ||
-        (localCred?.pinHash &&
-          (candidatePinHash === localCred.pinHash || candidatePasswordHash === localCred.pinHash)) ||
+        (validLocalCred?.pinHash &&
+          (candidatePinHash === validLocalCred.pinHash ||
+            candidatePasswordHash === validLocalCred.pinHash)) ||
         (storedPinHash &&
           (candidatePinHash === storedPinHash || candidatePasswordHash === storedPinHash))
     );
 
-    // 1. Direct Password Match (or user already created a password and their PIN & password are the same) -> Log in immediately!
+    // 1. Direct Password Match -> Log in immediately!
     if (matchesStoredPassword || (matchesStoredPin && Boolean(merged.passwordHash))) {
       const finalPasswordHash = merged.passwordHash || candidatePasswordHash;
       const finalPinHash =
@@ -1432,6 +1882,8 @@ export async function cloudLoginWithUsernameAndPassword(
         ...restoredMember,
         passwordHash: finalPasswordHash,
         pinHash: finalPinHash,
+        status: 'active',
+        sessionVersion,
       };
       if (isFourDigitInput) {
         await saveAppLockPin(trimmedSecret);
@@ -1446,37 +1898,10 @@ export async function cloudLoginWithUsernameAndPassword(
         color: finalMember.color || '#101D2D',
         passwordHash: finalPasswordHash,
         pinHash: finalPinHash,
+        status: 'active',
+        sessionVersion,
         updatedAt: new Date().toISOString(),
       });
-
-      if (typeof navigator === 'undefined' || navigator.onLine) {
-        try {
-          const batch = writeBatch(db);
-          batch.set(
-            doc(db, MEMBERS_COL, finalMember.id),
-            sanitizeForFirestore(finalMember),
-            { merge: true }
-          );
-          batch.set(
-            doc(db, USER_DIRECTORY_COL, cleanUsername),
-            sanitizeForFirestore({
-              username: cleanUsername,
-              memberId: finalMember.id,
-              uid: accountUid,
-              name: finalMember.name,
-              avatar: finalMember.avatar,
-              color: finalMember.color || '#101D2D',
-              passwordHash: finalPasswordHash,
-              pinHash: finalPinHash,
-              updatedAt: new Date().toISOString(),
-            }),
-            { merge: true }
-          );
-          await batch.commit();
-        } catch {
-          // Ignore if offline or cross-session rule check
-        }
-      }
 
       return {
         success: true,
@@ -1486,7 +1911,6 @@ export async function cloudLoginWithUsernameAndPassword(
     }
 
     // 2. If the user does NOT have a passwordHash yet and entered their valid 4-digit App Lock PIN:
-    //    prompt them to create their account password (which CAN be the exact same 4 digits as their PIN if they choose!).
     if (matchesStoredPin) {
       if (isFourDigitInput) {
         await saveAppLockPin(trimmedSecret);
@@ -1505,7 +1929,6 @@ export async function cloudLoginWithUsernameAndPassword(
     // 3. If the account has NO passwordHash yet (registered before passwords were added):
     if (!merged.passwordHash) {
       if (isFourDigitInput) {
-        // Account had no pinHash recorded yet in cloud; accept their 4-digit PIN and transition to password creation
         await saveAppLockPin(trimmedSecret);
         return {
           success: true,
@@ -1519,7 +1942,6 @@ export async function cloudLoginWithUsernameAndPassword(
       }
 
       if (trimmedSecret.length >= 4) {
-        // User entered a password directly for an account that didn't have passwordHash saved yet -> save it and log in!
         const completed = await cloudCompletePinLoginWithNewPassword(
           cleanUsername,
           trimmedSecret,
@@ -1531,8 +1953,6 @@ export async function cloudLoginWithUsernameAndPassword(
     }
 
     // 4. If the current authenticated device UID is ALREADY the authoritative owner of this @username in Firestore
-    //    (e.g., user just logged out on the same device after setting a password when the batch write had failed earlier),
-    //    and they entered a valid password (>= 4 chars), update their passwordHash and log them in!
     if (
       dirData &&
       dirData.uid &&
@@ -1597,11 +2017,12 @@ export async function cloudCompletePinLoginWithNewPassword(
       pinHashFromPassword ||
       undefined;
     const accountUid =
+      pendingMember?.uid ||
       authUser?.uid ||
       auth.currentUser?.uid ||
-      pendingMember?.uid ||
       getCachedUserIdentity().uid;
     const memberId = pendingMember?.id || `m_owner_${cleanUsername}`;
+    const sessionVersion = pendingMember?.sessionVersion || 1;
 
     const updatedMember: Member = sanitizeForFirestore({
       id: memberId,
@@ -1612,6 +2033,8 @@ export async function cloudCompletePinLoginWithNewPassword(
       color: pendingMember?.color || '#101D2D',
       passwordHash,
       pinHash,
+      status: 'active',
+      sessionVersion,
       createdAt: pendingMember?.createdAt || new Date().toISOString(),
     });
 
@@ -1624,6 +2047,8 @@ export async function cloudCompletePinLoginWithNewPassword(
       color: updatedMember.color || '#101D2D',
       passwordHash,
       pinHash,
+      status: 'active',
+      sessionVersion,
       updatedAt: new Date().toISOString(),
     });
 
@@ -1635,18 +2060,23 @@ export async function cloudCompletePinLoginWithNewPassword(
           sanitizeForFirestore({
             username: cleanUsername,
             memberId: updatedMember.id,
-            uid: accountUid,
+            uid: auth.currentUser?.uid || accountUid,
             name: updatedMember.name,
             avatar: updatedMember.avatar,
             color: updatedMember.color || '#101D2D',
             passwordHash,
             pinHash,
+            status: 'active',
+            sessionVersion,
             updatedAt: new Date().toISOString(),
           })
         );
         batch.set(
           doc(db, MEMBERS_COL, updatedMember.id),
-          sanitizeForFirestore(updatedMember),
+          sanitizeForFirestore({
+            ...updatedMember,
+            uid: auth.currentUser?.uid || accountUid,
+          }),
           { merge: true }
         );
         await batch.commit();
@@ -1672,7 +2102,7 @@ export async function cloudCompletePinLoginWithNewPassword(
 /**
  * Restores an existing registered @username account ONLY after verifying the owner's
  * cryptographic 20-character Recovery Code (SHA-256 verifier hash).
- * Prevents any unauthorized user from accessing someone else's account by username alone.
+ * Rejects restoration if the account has been permanently deleted.
  */
 export async function cloudVerifyAndAccessExistingAccount(
   rawUsername: string,
@@ -1709,9 +2139,9 @@ export async function cloudVerifyAndAccessExistingAccount(
       };
     }
 
-    // 2. Verify that the @username directory entry belongs to the same UID as the recovery record
+    // 2. Verify that the @username directory entry exists and is NOT deleted
     const dirRef = doc(db, USER_DIRECTORY_COL, cleanUsername);
-    const dirSnap = await getDoc(dirRef);
+    const dirSnap = await fetchServerFirstDoc(dirRef);
     if (!dirSnap.exists()) {
       return {
         success: false,
@@ -1720,6 +2150,14 @@ export async function cloudVerifyAndAccessExistingAccount(
     }
 
     const d = dirSnap.data();
+    if (d.status === 'deleted') {
+      removeLocalAccountCredential(cleanUsername);
+      return {
+        success: false,
+        error: `Account "@${cleanUsername}" has been permanently deleted and cannot be restored.`,
+      };
+    }
+
     if (d.uid && d.uid !== recoveryRes.uid) {
       return {
         success: false,
@@ -1729,6 +2167,7 @@ export async function cloudVerifyAndAccessExistingAccount(
 
     const accountUid: string = d.uid || recoveryRes.uid;
     const memberId: string = d.memberId || `m_owner_${cleanUsername}`;
+    const sessionVersion: number = typeof d.sessionVersion === 'number' ? d.sessionVersion : 1;
 
     let restoredMember: Member = {
       id: memberId,
@@ -1739,19 +2178,30 @@ export async function cloudVerifyAndAccessExistingAccount(
       color: d.color || '#101D2D',
       passwordHash: d.passwordHash,
       pinHash: d.pinHash,
+      status: 'active',
+      sessionVersion,
       createdAt: d.updatedAt || new Date().toISOString(),
     };
 
     try {
-      const memSnap = await getDoc(doc(db, MEMBERS_COL, memberId));
+      const memSnap = await fetchServerFirstDoc(doc(db, MEMBERS_COL, memberId));
       if (memSnap.exists()) {
         const memData = memSnap.data() as Member;
+        if (memData.status === 'deleted') {
+          removeLocalAccountCredential(cleanUsername);
+          return {
+            success: false,
+            error: `Account "@${cleanUsername}" has been permanently deleted.`,
+          };
+        }
         restoredMember = {
           ...restoredMember,
           ...memData,
           id: memberId,
           username: d.username || cleanUsername,
           uid: memData.uid || accountUid,
+          status: 'active',
+          sessionVersion,
         };
       }
     } catch {
@@ -1775,8 +2225,6 @@ export async function cloudVerifyAndAccessExistingAccount(
 
 /**
  * Signs out the current user profile on this device without deleting any cloud records.
- * Keeps the underlying Firebase Auth token intact so when the user logs back in with their
- * password (or App Lock PIN), their cloud groups and expenses immediately re-sync.
  */
 export async function cloudLogoutUserSession(): Promise<{ success: boolean; newUser: AppUser }> {
   if (auth.currentUser) {
@@ -1792,13 +2240,14 @@ export async function cloudLogoutUserSession(): Promise<{ success: boolean; newU
 }
 
 /**
- * Permanently deletes the current user's account, including:
- * - Their `@username` reservation in `/userDirectory/{username}` (freeing the handle)
- * - Their member profile in `/members/{memberId}`
- * - Their own `/groupMembers/{id}` records
- * - Their `/securityProfiles/{uid}` and `/recovery/{verifierHash}` records
- * - Groups owned solely by this user (and their child records)
- * - Resets the Firebase anonymous authentication session
+ * Globally and permanently deletes the current user's account across all 3 platforms:
+ * 1. Writes an authoritative tombstone (`status: 'deleted'`, `deletedAt`, incremented `sessionVersion`)
+ *    to `/userDirectory/{username}` and `/members/{memberId}` in the shared Firestore database.
+ *    - Any other platform (Platform 2, Platform 3) listening via `subscribeToAccountStatus` or checking
+ *      via `verifyActiveAccountSession` immediately detects `status === 'deleted'` and logs out.
+ *    - `firestore.rules` permanently blocks any stale session with the old `memberId` from resurrecting the record.
+ * 2. Deletes owned groups, group memberships, recovery verifiers, and security profiles.
+ * 3. Purges all local credentials, sessions, and Firebase Auth tokens.
  */
 export async function cloudDeleteUserAccount(params: {
   member?: Member;
@@ -1821,6 +2270,13 @@ export async function cloudDeleteUserAccount(params: {
       params.uid ||
       params.member?.uid ||
       getCachedUserIdentity().uid;
+
+    const cleanUsername = params.member?.username
+      ? normalizeUsername(params.member.username)
+      : '';
+    const memberId = params.member?.id || (cleanUsername ? `m_owner_${cleanUsername}` : '');
+    const deletedAt = new Date().toISOString();
+    const nextSessionVersion = (params.member?.sessionVersion || 1) + 1;
 
     // 1. Delete owned groups and their child documents first
     if (params.ownedGroupsToDelete && params.ownedGroupsToDelete.length > 0) {
@@ -1845,30 +2301,63 @@ export async function cloudDeleteUserAccount(params: {
       );
     }
 
-    // 3. Delete @username reservation in /userDirectory/{username} BEFORE deleting /members/{memberId}
-    // (because /userDirectory delete rule checks isMemberOwner(existing().memberId))
-    if (params.member?.username) {
-      const cleanUsername = normalizeUsername(params.member.username);
-      if (cleanUsername) {
-        removeLocalAccountCredential(cleanUsername);
+    // 3. Write centralized cross-platform tombstone (`status: 'deleted'`, `deletedAt`, `sessionVersion`)
+    //    to `/userDirectory/{username}` and `/members/{memberId}` so all platforms immediately revoke access!
+    if (cleanUsername) {
+      removeLocalAccountCredential(cleanUsername);
+      try {
+        await setDoc(
+          doc(db, USER_DIRECTORY_COL, cleanUsername),
+          sanitizeForFirestore({
+            username: cleanUsername,
+            memberId: memberId || `m_owner_${cleanUsername}`,
+            uid: effectiveUid,
+            name: params.member?.name || cleanUsername,
+            avatar: params.member?.avatar || '👤',
+            color: params.member?.color || '#101D2D',
+            status: 'deleted',
+            deletedAt,
+            sessionVersion: nextSessionVersion,
+            updatedAt: deletedAt,
+          })
+        );
+      } catch (err) {
+        console.warn('Could not write tombstone to userDirectory, attempting deleteDoc:', err);
         try {
           await deleteDoc(doc(db, USER_DIRECTORY_COL, cleanUsername));
-        } catch (err) {
-          console.warn('Could not delete userDirectory entry:', err);
+        } catch {
+          // Ignore
         }
       }
     }
 
-    // 4. Delete member profile in /members/{memberId}
-    if (params.member?.id) {
+    if (memberId) {
       try {
-        await deleteDoc(doc(db, MEMBERS_COL, params.member.id));
+        await setDoc(
+          doc(db, MEMBERS_COL, memberId),
+          sanitizeForFirestore({
+            id: memberId,
+            uid: effectiveUid,
+            name: params.member?.name || cleanUsername || 'Deleted User',
+            avatar: params.member?.avatar || '👤',
+            color: params.member?.color || '#101D2D',
+            status: 'deleted',
+            deletedAt,
+            sessionVersion: nextSessionVersion,
+            createdAt: params.member?.createdAt || deletedAt,
+          })
+        );
       } catch (err) {
-        console.warn('Could not delete member profile:', err);
+        console.warn('Could not write tombstone to members, attempting deleteDoc:', err);
+        try {
+          await deleteDoc(doc(db, MEMBERS_COL, memberId));
+        } catch {
+          // Ignore
+        }
       }
     }
 
-    // 5. Delete recovery record and security profile
+    // 4. Delete recovery record and security profile
     if (params.verifierHash && params.verifierHash.length === 64) {
       try {
         await deleteDoc(doc(db, RECOVERY_COL, params.verifierHash));
@@ -1884,7 +2373,8 @@ export async function cloudDeleteUserAccount(params: {
       }
     }
 
-    // 6. Delete or sign out of the Firebase Auth anonymous user so a fresh UID is provisioned next time
+    // 5. Purge local session and sign out / delete the Firebase Auth anonymous user
+    purgeLocalAccountSession(cleanUsername || undefined);
     if (auth.currentUser) {
       try {
         await auth.currentUser.delete();
@@ -1908,8 +2398,8 @@ export async function cloudDeleteUserAccount(params: {
 }
 
 /**
- * Verifies whether a user exists in the Splitzy app database by their unique @username or Member ID.
- * Uses the O(1) `/userDirectory/{username}` index without exposing private member collections.
+ * Verifies whether an active user exists in the Splitzy app database by their unique @username or Member ID.
+ * Uses the O(1) `/userDirectory/{username}` index and excludes deleted accounts (`status === 'deleted'`).
  */
 export async function cloudLookupRegisteredUser(
   identifierRaw: string
@@ -1935,11 +2425,18 @@ export async function cloudLookupRegisteredUser(
   try {
     await ensureAuthUser();
 
-    // 1. Check `/userDirectory/{username}` (O(1) authenticated lookup)
+    // 1. Check `/userDirectory/{username}` from live server
     try {
-      const dirSnap = await getDoc(doc(db, USER_DIRECTORY_COL, cleanUsername));
+      const dirSnap = await fetchServerFirstDoc(doc(db, USER_DIRECTORY_COL, cleanUsername));
       if (dirSnap.exists()) {
         const d = dirSnap.data();
+        if (d.status === 'deleted') {
+          removeLocalAccountCredential(cleanUsername);
+          return {
+            found: false,
+            message: `User "@${cleanUsername}" has deleted their account and is no longer available.`,
+          };
+        }
         return {
           found: true,
           member: {
@@ -1949,32 +2446,37 @@ export async function cloudLookupRegisteredUser(
             name: d.name,
             avatar: d.avatar || '👨‍💻',
             color: d.color || '#059669',
+            status: 'active',
+            sessionVersion: d.sessionVersion || 1,
             createdAt: d.updatedAt || new Date().toISOString(),
           },
           message: `Found registered user @${d.username} (${d.name})`,
         };
       }
     } catch {
-      // Fall through to local state check
+      // Fall through to local state check if offline
     }
 
-    // 2. Check locally cached known members from synced groups
-    try {
-      const localState = loadAppState();
-      const localMatch = localState.members.find(
-        m =>
-          (m.username && normalizeUsername(m.username) === cleanUsername) ||
-          m.id === trimmed
-      );
-      if (localMatch) {
-        return {
-          found: true,
-          member: localMatch,
-          message: `Found registered user @${localMatch.username || localMatch.id} (${localMatch.name})`,
-        };
+    // 2. Check locally cached known members from synced groups (only if not deleted)
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      try {
+        const localState = loadAppState();
+        const localMatch = localState.members.find(
+          m =>
+            m.status !== 'deleted' &&
+            ((m.username && normalizeUsername(m.username) === cleanUsername) ||
+              m.id === trimmed)
+        );
+        if (localMatch) {
+          return {
+            found: true,
+            member: localMatch,
+            message: `Found registered user @${localMatch.username || localMatch.id} (${localMatch.name})`,
+          };
+        }
+      } catch {
+        // Ignore
       }
-    } catch {
-      // Ignore
     }
 
     return {
@@ -2001,6 +2503,14 @@ export async function cloudAddMember(
   isGroupOwner = false
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const accountCheck = await verifyActiveAccountSession();
+    if (!accountCheck.valid) {
+      return {
+        success: false,
+        error: accountCheck.error || 'Account session is no longer valid.',
+      };
+    }
+
     const authUser = await ensureAuthUser();
     const realAuthUid = authUser?.uid || auth.currentUser?.uid;
     const batch = writeBatch(db);
@@ -2056,6 +2566,14 @@ export async function cloudSaveExpense(
   parentGroup?: Group | null
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const accountCheck = await verifyActiveAccountSession();
+    if (!accountCheck.valid) {
+      return {
+        success: false,
+        error: accountCheck.error || 'Account session is no longer valid.',
+      };
+    }
+
     const authUser = await ensureAuthUser();
     const realAuthUid = authUser?.uid || auth.currentUser?.uid;
     const cleanExpense = sanitizeForFirestore(expense);
@@ -2150,6 +2668,14 @@ export async function cloudDeleteExpense(
   associatedShares: ExpenseShare[]
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const accountCheck = await verifyActiveAccountSession();
+    if (!accountCheck.valid) {
+      return {
+        success: false,
+        error: accountCheck.error || 'Account session is no longer valid.',
+      };
+    }
+
     await ensureAuthUser();
     const batch = writeBatch(db);
     batch.delete(doc(db, EXPENSES_COL, expenseId));
@@ -2173,6 +2699,14 @@ export async function cloudSaveSettlement(
   settlement: SettlementRecord
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const accountCheck = await verifyActiveAccountSession();
+    if (!accountCheck.valid) {
+      return {
+        success: false,
+        error: accountCheck.error || 'Account session is no longer valid.',
+      };
+    }
+
     await ensureAuthUser();
     const ref = doc(db, SETTLEMENTS_COL, settlement.id);
     const data = sanitizeForFirestore(settlement);
@@ -2196,6 +2730,14 @@ export async function cloudUploadFullState(
   currentUser?: { uid: string } | null
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const accountCheck = await verifyActiveAccountSession(state.userProfile);
+    if (!accountCheck.valid) {
+      return {
+        success: false,
+        error: accountCheck.error || 'Account session is no longer valid.',
+      };
+    }
+
     const authUser = await ensureAuthUser();
     const realAuthUid = authUser?.uid || auth.currentUser?.uid;
     const fallbackUid = currentUser?.uid || 'anonymous';
@@ -2286,6 +2828,8 @@ export async function cloudUploadFullState(
         const resolvedPasswordHash = state.userProfile.passwordHash || storedCred?.passwordHash;
         const resolvedPinHash =
           state.userProfile.pinHash || storedCred?.pinHash || getStoredAppLockPinHash() || undefined;
+        const resolvedSessionVersion =
+          state.userProfile.sessionVersion || storedCred?.sessionVersion || 1;
         pendingWrites.push({
           col: MEMBERS_COL,
           id: state.userProfile.id,
@@ -2293,6 +2837,8 @@ export async function cloudUploadFullState(
             ...state.userProfile,
             username: cleanProfileUsername,
             uid: realAuthUid,
+            status: 'active',
+            sessionVersion: resolvedSessionVersion,
             groupId: state.userProfile.groupId || primaryGroupId,
             memberUserIds: Array.from(allCoMemberUids),
             ...(resolvedPasswordHash && isValidVerifierHash(resolvedPasswordHash)
@@ -2314,6 +2860,8 @@ export async function cloudUploadFullState(
               name: state.userProfile.name,
               avatar: state.userProfile.avatar,
               color: state.userProfile.color || '#101D2D',
+              status: 'active',
+              sessionVersion: resolvedSessionVersion,
               updatedAt: new Date().toISOString(),
               ...(resolvedPasswordHash && isValidVerifierHash(resolvedPasswordHash)
                 ? { passwordHash: resolvedPasswordHash }
@@ -2328,7 +2876,7 @@ export async function cloudUploadFullState(
     }
 
     for (const m of state.members) {
-      if (!m.id) continue;
+      if (!m.id || m.status === 'deleted') continue;
       const isOwnMember =
         m.id === ownMemberId ||
         (Boolean(m.uid) && (m.uid === realAuthUid || isLocalFallbackUid(m.uid)));
@@ -2339,6 +2887,7 @@ export async function cloudUploadFullState(
           data: sanitizeForFirestore({
             ...m,
             uid: realAuthUid || effectiveUid,
+            status: m.status || 'active',
             groupId: m.groupId || primaryGroupId,
             memberUserIds: Array.from(allCoMemberUids),
           }),
@@ -2462,6 +3011,14 @@ export async function joinGroupByInviteCode(
     return {
       success: false,
       message: `Too many invite code attempts. Please wait ${rateCheck.retryAfterSec}s before trying again.`,
+    };
+  }
+
+  const accountCheck = await verifyActiveAccountSession();
+  if (!accountCheck.valid) {
+    return {
+      success: false,
+      message: accountCheck.error || 'Your account session is no longer valid.',
     };
   }
 

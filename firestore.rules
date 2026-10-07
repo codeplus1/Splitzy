@@ -191,15 +191,7 @@ service cloud.firestore {
       );
     }
 
-    // Group Owner Update vs Participant Settlement State Transition vs Invite-Code Join Transition
-    function isValidRetentionOption(opt) {
-      return opt is string && (
-        opt == '3_days' ||
-        opt == '15_days' ||
-        opt == '1_month'
-      );
-    }
-
+    // Group Owner Update vs Invite-Code Join Transition
     function isOwnerGroupUpdate() {
       return isGroupOwnerData(existing()) &&
         incoming().id == existing().id &&
@@ -219,28 +211,6 @@ service cloud.firestore {
           'inviteCode',
           'reviewNewMembers',
           'createdBy',
-          'updatedAt',
-          'settled',
-          'settledAt',
-          'retentionOption',
-          'scheduledDeleteAt',
-          'keepGroup'
-        ]);
-    }
-
-    function isParticipantSettlementStatusUpdate() {
-      return isGroupMemberData(existing()) &&
-        incoming().id == existing().id &&
-        incoming().createdBy == existing().createdBy &&
-        incoming().name == existing().name &&
-        incoming().baseCurrency == existing().baseCurrency &&
-        incoming().memberUserIds == existing().memberUserIds &&
-        incoming().diff(existing()).affectedKeys().hasOnly([
-          'settled',
-          'settledAt',
-          'retentionOption',
-          'scheduledDeleteAt',
-          'keepGroup',
           'updatedAt'
         ]);
     }
@@ -280,12 +250,7 @@ service cloud.firestore {
         data.memberUserIds is list &&
         data.memberUserIds.size() >= 1 &&
         data.memberUserIds.size() <= 100 &&
-        (!('inviteCode' in data) || isValidInviteCode(data.inviteCode)) &&
-        (!('settled' in data) || data.settled is bool) &&
-        (!('settledAt' in data) || data.settledAt == null || (data.settledAt is number && data.settledAt > 0)) &&
-        (!('retentionOption' in data) || isValidRetentionOption(data.retentionOption)) &&
-        (!('scheduledDeleteAt' in data) || data.scheduledDeleteAt == null || (data.scheduledDeleteAt is number && data.scheduledDeleteAt > 0)) &&
-        (!('keepGroup' in data) || data.keepGroup is bool);
+        (!('inviteCode' in data) || isValidInviteCode(data.inviteCode));
     }
 
     function isValidMember(data) {
@@ -301,7 +266,10 @@ service cloud.firestore {
         (!('groupId' in data) || isValidId(data.groupId)) &&
         (!('memberUserIds' in data) || (data.memberUserIds is list && data.memberUserIds.size() <= 100)) &&
         (!('passwordHash' in data) || isValidVerifierHash(data.passwordHash)) &&
-        (!('pinHash' in data) || isValidVerifierHash(data.pinHash));
+        (!('pinHash' in data) || isValidVerifierHash(data.pinHash)) &&
+        (!('status' in data) || data.status in ['active', 'deleted']) &&
+        (!('deletedAt' in data) || (data.deletedAt is string && data.deletedAt.size() <= 64)) &&
+        (!('sessionVersion' in data) || (data.sessionVersion is number && data.sessionVersion >= 1));
     }
 
     function isValidGroupMember(data) {
@@ -397,6 +365,9 @@ service cloud.firestore {
         data.name.size() <= 100 &&
         (!('passwordHash' in data) || isValidVerifierHash(data.passwordHash)) &&
         (!('pinHash' in data) || isValidVerifierHash(data.pinHash)) &&
+        (!('status' in data) || data.status in ['active', 'deleted']) &&
+        (!('deletedAt' in data) || (data.deletedAt is string && data.deletedAt.size() <= 64)) &&
+        (!('sessionVersion' in data) || (data.sessionVersion is number && data.sessionVersion >= 1)) &&
         data.keys().hasOnly([
           'username',
           'memberId',
@@ -406,6 +377,9 @@ service cloud.firestore {
           'color',
           'passwordHash',
           'pinHash',
+          'status',
+          'deletedAt',
+          'sessionVersion',
           'updatedAt'
         ]);
     }
@@ -427,7 +401,7 @@ service cloud.firestore {
       allow update: if isSignedIn() &&
         isValidId(groupId) &&
         isValidGroup(incoming()) &&
-        (isOwnerGroupUpdate() || isValidInviteJoin(groupId) || isParticipantSettlementStatusUpdate());
+        (isOwnerGroupUpdate() || isValidInviteJoin(groupId));
       allow delete: if isSignedIn() &&
         isValidId(groupId) &&
         (resource == null || isGroupOwnerData(existing()));
@@ -436,7 +410,7 @@ service cloud.firestore {
     // 2. Members Collection
     // - Mandatory `uid` on all documents (no UID-less document creation or modification).
     // - Read/list restricted to profile owner and co-participants of shared groups.
-    // - Create/update/delete restricted strictly to the profile owner.
+    // - Once marked `status == 'deleted'`, a member record can never be reactivated.
     match /members/{memberId} {
       allow get: if isValidId(memberId) && (canReadMemberProfile(existing()) || isMemberProfileOwner(existing()));
       allow list: if canReadMemberProfile(existing());
@@ -448,10 +422,15 @@ service cloud.firestore {
         isValidMember(incoming()) &&
         incoming().id == memberId &&
         isMemberProfileOwner(incoming()) &&
+        (!('status' in existing()) || existing().status != 'deleted' || ('status' in incoming() && incoming().status == 'deleted')) &&
         (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) && (
           (
             isMemberProfileOwner(existing()) &&
             existing().uid == incoming().uid
+          ) ||
+          (
+            'status' in incoming() &&
+            incoming().status == 'deleted'
           ) ||
           (
             isSignedIn() &&
@@ -632,7 +611,7 @@ service cloud.firestore {
         request.auth.uid == uid;
     }
 
-    // 10. User Directory (O(1) handle lookup; list forbidden; only owner or password/PIN-verified user can update)
+    // 10. User Directory (O(1) handle lookup; list forbidden; centralized account status & sessionVersion source of truth)
     match /userDirectory/{username} {
       allow get: if isValidUsernameHandle(username);
       allow list: if false;
@@ -644,20 +623,38 @@ service cloud.firestore {
       allow update: if isValidUsernameHandle(username) &&
         isValidUserDirectory(incoming()) &&
         incoming().username == username &&
-        existing().memberId == incoming().memberId &&
         isAuthorizedIdentity(incoming().uid) && (
+          // Case A: Account is currently active; owner or verified user updates profile or marks status == 'deleted'
           (
-            existing().uid == incoming().uid &&
-            isAuthorizedIdentity(existing().uid) &&
-            isMemberOwner(incoming().memberId)
-          ) ||
-          (
-            isSignedIn() &&
-            'passwordHash' in incoming() &&
-            isValidVerifierHash(incoming().passwordHash) && (
-              !('passwordHash' in existing()) ||
-              incoming().passwordHash == existing().passwordHash
+            (!('status' in existing()) || existing().status != 'deleted') &&
+            existing().memberId == incoming().memberId && (
+              (
+                existing().uid == incoming().uid &&
+                isAuthorizedIdentity(existing().uid) &&
+                isMemberOwner(incoming().memberId)
+              ) ||
+              (
+                'status' in incoming() &&
+                incoming().status == 'deleted'
+              ) ||
+              (
+                isSignedIn() &&
+                'passwordHash' in incoming() &&
+                isValidVerifierHash(incoming().passwordHash) && (
+                  !('passwordHash' in existing()) ||
+                  incoming().passwordHash == existing().passwordHash
+                )
+              )
             )
+          ) ||
+          // Case B: Previously deleted handle is freshly registered with a brand-new memberId
+          (
+            'status' in existing() &&
+            existing().status == 'deleted' &&
+            'status' in incoming() &&
+            incoming().status == 'active' &&
+            incoming().memberId != existing().memberId &&
+            isMemberOwner(incoming().memberId)
           )
         );
       allow delete: if isValidUsernameHandle(username) &&

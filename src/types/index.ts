@@ -15,6 +15,9 @@ export interface Member {
   passwordHash?: string; // Salted SHA-256 hex digest of user's account login password
   pinHash?: string; // Salted SHA-256 hex digest of user's 4-digit App Lock PIN
   isTemporary?: boolean; // True when user selected Temporary Use (no account/registration required)
+  status?: 'active' | 'deleted'; // Centralized cross-platform account status
+  deletedAt?: string; // ISO timestamp when account was globally deleted
+  sessionVersion?: number; // Monotonic version counter for cross-platform session/token invalidation
   createdAt: string;
 }
 

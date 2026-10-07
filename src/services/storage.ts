@@ -6,7 +6,6 @@ import {
   ExpenseShare,
   SettlementRecord,
   SupportedLanguage,
-  CalendarType,
   UserSecurityProfile,
 } from '../types';
 
@@ -20,8 +19,6 @@ export interface AppState {
   activeGroupId: string | null;
   theme: 'light' | 'dark' | 'system';
   language: SupportedLanguage;
-  defaultCurrency?: string;
-  defaultCalendar?: CalendarType;
   currentUserId: string; // for personal balance perspective
   userProfile?: Member; // The primary owner/user profile saved when opening the app
   pendingGroupIds?: string[]; // IDs of groups created locally in this session pending cloud confirmation
@@ -52,6 +49,9 @@ export interface StoredAccountCredential {
   color?: string;
   passwordHash?: string;
   pinHash?: string;
+  status?: 'active' | 'deleted';
+  deletedAt?: string;
+  sessionVersion?: number;
   updatedAt: string;
 }
 
@@ -66,14 +66,29 @@ export function saveLocalAccountCredential(cred: StoredAccountCredential): void 
       ...prev,
       ...cred,
       username: clean,
-      passwordHash: cred.passwordHash || prev.passwordHash,
-      pinHash: cred.pinHash || prev.pinHash,
+      passwordHash: cred.passwordHash !== undefined ? cred.passwordHash : prev.passwordHash,
+      pinHash: cred.pinHash !== undefined ? cred.pinHash : prev.pinHash,
+      status: cred.status || prev.status || 'active',
+      sessionVersion: cred.sessionVersion ?? prev.sessionVersion ?? 1,
       updatedAt: new Date().toISOString(),
     };
     localStorage.setItem(ACCOUNT_CREDENTIALS_STORAGE_KEY, JSON.stringify(map));
   } catch {
     // Ignore storage issues
   }
+}
+
+export function purgeLocalAccountSession(username?: string): AppState {
+  try {
+    if (username) {
+      removeLocalAccountCredential(username);
+    }
+    localStorage.removeItem('splitze_last_logged_out_username');
+    localStorage.removeItem(APP_LOCK_SAVED_PIN_BACKUP_KEY);
+  } catch {
+    // Ignore storage errors
+  }
+  return resetStorage();
 }
 
 export function getLocalAccountCredential(username: string): StoredAccountCredential | null {
@@ -121,26 +136,9 @@ export function clearAllLocalLocksAndSessionKeys(): void {
 }
 
 export function getInitialCleanState(): AppState {
-  let cachedUid = 'u_default';
-  try {
-    cachedUid =
-      localStorage.getItem(AUTHORITATIVE_AUTH_UID_KEY) || `u_${Date.now().toString(36)}`;
-  } catch {
-    // Ignore storage issues
-  }
-  const defaultMemberId = `m_owner_${cachedUid.replace(/[^a-zA-Z0-9]/g, '').slice(-8) || 'me'}`;
-  const defaultMember: Member = {
-    id: defaultMemberId,
-    uid: cachedUid,
-    name: 'You',
-    avatar: '👨‍💻',
-    color: '#101D2D',
-    createdAt: new Date().toISOString(),
-  };
-
   return {
     groups: [],
-    members: [defaultMember],
+    members: [],
     groupMembers: [],
     expenses: [],
     expenseShares: [],
@@ -148,10 +146,7 @@ export function getInitialCleanState(): AppState {
     activeGroupId: null,
     theme: 'light',
     language: 'en',
-    defaultCurrency: 'NPR',
-    defaultCalendar: 'BS',
-    currentUserId: defaultMemberId,
-    userProfile: defaultMember,
+    currentUserId: '',
     pendingGroupIds: [],
     pendingExpenseIds: [],
     pendingSettlementIds: [],
@@ -200,20 +195,7 @@ export function loadAppState(): AppState {
     const loadedMembers = parsed.members || [];
     const currentMember =
       loadedMembers.find(m => m.id === parsed.currentUserId) || loadedMembers[0];
-    let resolvedUserProfile = parsed.userProfile || currentMember || undefined;
-
-    if (!resolvedUserProfile) {
-      const cachedUid =
-        localStorage.getItem(AUTHORITATIVE_AUTH_UID_KEY) || `u_${Date.now().toString(36)}`;
-      resolvedUserProfile = {
-        id: `m_owner_${cachedUid.replace(/[^a-zA-Z0-9]/g, '').slice(-8) || 'me'}`,
-        uid: cachedUid,
-        name: 'You',
-        avatar: '👨‍💻',
-        color: '#101D2D',
-        createdAt: new Date().toISOString(),
-      };
-    }
+    const resolvedUserProfile = parsed.userProfile || currentMember || undefined;
 
     if (
       resolvedUserProfile &&
@@ -232,9 +214,7 @@ export function loadAppState(): AppState {
       activeGroupId: parsed.activeGroupId ?? null,
       theme: parsed.theme || 'light',
       language: parsed.language || 'en',
-      defaultCurrency: parsed.defaultCurrency || parsed.groups?.[0]?.baseCurrency || 'NPR',
-      defaultCalendar: parsed.defaultCalendar || parsed.groups?.[0]?.preferredCalendar || 'BS',
-      currentUserId: parsed.currentUserId || resolvedUserProfile.id,
+      currentUserId: parsed.currentUserId || resolvedUserProfile?.id || '',
       userProfile: resolvedUserProfile,
       pendingGroupIds: parsed.pendingGroupIds || [],
       pendingExpenseIds: parsed.pendingExpenseIds || [],
@@ -299,6 +279,12 @@ export function reconcileAppState(
     settlements: SettlementRecord[];
   }
 ): AppState {
+  // If the user is currently logged out on this device (no active userProfile and no currentUserId),
+  // do NOT populate local state from background cloud listeners until they log in or register.
+  if (!local.userProfile && !local.currentUserId) {
+    return local;
+  }
+
   const deletedExpenseSet = new Set(local.deletedExpenseIds || []);
   const deletedGroupSet = new Set(local.deletedGroupIds || []);
   const pendingGroupSet = new Set(local.pendingGroupIds || []);
@@ -344,17 +330,24 @@ export function reconcileAppState(
 
   const validGroupIdSet = new Set(groupMap.keys());
 
-  // 2. Reconcile Members
+  // 2. Reconcile Members (exclude permanently deleted account tombstones)
   const memberMap = new Map<string, Member>();
-  if (local.userProfile) {
+  if (local.userProfile && local.userProfile.status !== 'deleted') {
     memberMap.set(local.userProfile.id, local.userProfile);
   }
   local.members.forEach(m => {
-    if (!m.groupId || validGroupIdSet.has(m.groupId) || m.id === local.currentUserId) {
+    if (
+      m.status !== 'deleted' &&
+      (!m.groupId || validGroupIdSet.has(m.groupId) || m.id === local.currentUserId)
+    ) {
       memberMap.set(m.id, m);
     }
   });
   cloud.members.forEach(m => {
+    if (m.status === 'deleted') {
+      memberMap.delete(m.id);
+      return;
+    }
     if (!m.groupId || validGroupIdSet.has(m.groupId)) {
       const existingMem = memberMap.get(m.id);
       memberMap.set(m.id, {

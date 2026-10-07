@@ -210,10 +210,6 @@ function isValidShareExpenseRelation(
   return false;
 }
 
-function isValidRetentionOption(opt: unknown): boolean {
-  return opt === '3_days' || opt === '15_days' || opt === '1_month';
-}
-
 function isOwnerGroupUpdate(
   auth: MockAuthContext | null,
   existing: any,
@@ -235,38 +231,9 @@ function isOwnerGroupUpdate(
     'memberUserIds',
     'inviteCode',
     'reviewNewMembers',
-    'settled',
-    'settledAt',
-    'retentionOption',
-    'scheduledDeleteAt',
-    'keepGroup',
-    'updatedAt',
   ]);
   const affected = getAffectedKeys(existing, incoming);
   return affected.every(k => allowed.has(k));
-}
-
-function isParticipantSettlementStatusUpdate(
-  auth: MockAuthContext | null,
-  existing: any,
-  incoming: any
-): boolean {
-  if (!isGroupMemberData(auth, existing) || !incoming) return false;
-  if (incoming.id !== existing.id) return false;
-  if (incoming.createdBy !== existing.createdBy) return false;
-  if (incoming.name !== existing.name) return false;
-  if (incoming.baseCurrency !== existing.baseCurrency) return false;
-  if (JSON.stringify(incoming.memberUserIds) !== JSON.stringify(existing.memberUserIds)) return false;
-  const allowed = new Set([
-    'settled',
-    'settledAt',
-    'retentionOption',
-    'scheduledDeleteAt',
-    'keepGroup',
-    'updatedAt',
-  ]);
-  const affected = getAffectedKeys(existing, incoming);
-  return affected.length > 0 && affected.every(k => allowed.has(k));
 }
 
 function isValidInviteJoin(
@@ -329,13 +296,7 @@ export function evaluateFirestoreRule(params: {
           typeof incomingData?.createdBy === 'string' &&
           incomingData.createdBy === auth!.uid &&
           Array.isArray(incomingData?.memberUserIds) &&
-          incomingData.memberUserIds.includes(auth!.uid) &&
-          (!('settled' in incomingData) || typeof incomingData.settled === 'boolean') &&
-          (!('settledAt' in incomingData) ||
-            incomingData.settledAt === null ||
-            (typeof incomingData.settledAt === 'number' && incomingData.settledAt > 0)) &&
-          (!('retentionOption' in incomingData) ||
-            isValidRetentionOption(incomingData.retentionOption))
+          incomingData.memberUserIds.includes(auth!.uid)
         );
       }
       if (operation === 'update') {
@@ -346,18 +307,11 @@ export function evaluateFirestoreRule(params: {
           incomingData.name.length > 0 &&
           typeof incomingData.baseCurrency === 'string' &&
           typeof incomingData.createdBy === 'string' &&
-          Array.isArray(incomingData.memberUserIds) &&
-          (!('settled' in incomingData) || typeof incomingData.settled === 'boolean') &&
-          (!('settledAt' in incomingData) ||
-            incomingData.settledAt === null ||
-            (typeof incomingData.settledAt === 'number' && incomingData.settledAt > 0)) &&
-          (!('retentionOption' in incomingData) ||
-            isValidRetentionOption(incomingData.retentionOption));
+          Array.isArray(incomingData.memberUserIds);
         if (!validSchema) return false;
         return (
           isOwnerGroupUpdate(auth, existingData, incomingData) ||
-          isValidInviteJoin(auth, dbBefore, dbAfter, docId, existingData, incomingData) ||
-          isParticipantSettlementStatusUpdate(auth, existingData, incomingData)
+          isValidInviteJoin(auth, dbBefore, dbAfter, docId, existingData, incomingData)
         );
       }
       if (operation === 'delete') {
@@ -398,6 +352,11 @@ export function evaluateFirestoreRule(params: {
         );
       }
       if (operation === 'update') {
+        const isAlreadyDeleted = existingData?.status === 'deleted';
+        const incomingIsDeleted = incomingData?.status === 'deleted';
+        if (isAlreadyDeleted && !incomingIsDeleted) {
+          return false;
+        }
         const isPasswordOrPinVerified = Boolean(
           existingData &&
             incomingData &&
@@ -418,7 +377,9 @@ export function evaluateFirestoreRule(params: {
           isValidMemberSchema(incomingData) &&
           incomingData.id === docId &&
           isMemberProfileOwner(auth, incomingData) &&
-          (isMemberProfileOwner(auth, existingData) || isPasswordOrPinVerified) &&
+          (isMemberProfileOwner(auth, existingData) ||
+            incomingIsDeleted ||
+            isPasswordOrPinVerified) &&
           (!('createdAt' in (existingData || {})) ||
             incomingData.createdAt === existingData.createdAt)
         );
@@ -710,6 +671,8 @@ export function evaluateFirestoreRule(params: {
         );
       }
       if (operation === 'update') {
+        const isAlreadyDeleted = existingData?.status === 'deleted';
+        const incomingIsDeleted = incomingData?.status === 'deleted';
         const isPasswordOrPinVerified = Boolean(
           existingData &&
             incomingData &&
@@ -724,6 +687,22 @@ export function evaluateFirestoreRule(params: {
                 typeof incomingData.passwordHash === 'string' &&
                 isValidVerifierHash(incomingData.passwordHash)))
         );
+
+        // Case B: Previously deleted handle is freshly registered with a brand-new memberId
+        if (isAlreadyDeleted) {
+          return (
+            isSignedIn &&
+            isValidUsernameHandle(docId) &&
+            validDirCreds(incomingData) &&
+            incomingData?.username === docId &&
+            incomingData?.uid === auth!.uid &&
+            incomingData?.status === 'active' &&
+            incomingData?.memberId !== existingData?.memberId &&
+            isMemberOwner(auth, dbBefore, dbAfter, incomingData.memberId)
+          );
+        }
+
+        // Case A: Account is currently active; owner updates profile or marks status === 'deleted'
         return (
           isSignedIn &&
           isValidUsernameHandle(docId) &&
@@ -731,8 +710,9 @@ export function evaluateFirestoreRule(params: {
           incomingData?.username === docId &&
           incomingData?.uid === auth!.uid &&
           existingData?.memberId === incomingData?.memberId &&
-          isMemberOwner(auth, dbBefore, dbAfter, incomingData.memberId) &&
-          (existingData?.uid === auth!.uid || isPasswordOrPinVerified)
+          (incomingIsDeleted ||
+            (isMemberOwner(auth, dbBefore, dbAfter, incomingData.memberId) &&
+              (existingData?.uid === auth!.uid || isPasswordOrPinVerified)))
         );
       }
       if (operation === 'delete') {
@@ -1396,6 +1376,92 @@ export function runSecurityRulesVerificationSuite(): {
       sizeBytes: 1024,
       metadata: { uploadedBy: 'uid_alice', groupId: 'g_alpha' },
       dbBefore,
+    }),
+    false
+  );
+
+  // =========================================================================
+  // SUITE 8: CROSS-PLATFORM ACCOUNT DELETION & SESSION INVALIDATION
+  // =========================================================================
+  const deletedDirDoc = {
+    username: 'alice_1',
+    memberId: 'm_alice',
+    uid: 'uid_alice_platform1',
+    name: 'Alice',
+    status: 'deleted',
+    deletedAt: '2026-10-07T00:00:00.000Z',
+    sessionVersion: 2,
+  };
+  const deletedMemberDoc = {
+    id: 'm_alice',
+    uid: 'uid_alice_platform1',
+    name: 'Alice',
+    username: 'alice_1',
+    status: 'deleted',
+    deletedAt: '2026-10-07T00:00:00.000Z',
+    sessionVersion: 2,
+  };
+
+  assertRule(
+    '[Cross-Platform Deletion] Platform 1 allowed to mark Account A (alice_1) as status: deleted with bumped sessionVersion',
+    evaluateFirestoreRule({
+      auth: { uid: 'uid_alice_platform1' },
+      collection: 'userDirectory',
+      docId: 'alice_1',
+      operation: 'update',
+      existingData: dbBefore.userDirectory.alice_1,
+      incomingData: deletedDirDoc,
+      dbBefore,
+    }),
+    true
+  );
+
+  assertRule(
+    '[Cross-Platform Deletion] Stale session on Platform 2 or Platform 3 DENIED from reactivating deleted Account A with old memberId (m_alice)',
+    evaluateFirestoreRule({
+      auth: { uid: 'uid_alice_platform2' },
+      collection: 'userDirectory',
+      docId: 'alice_1',
+      operation: 'update',
+      existingData: deletedDirDoc,
+      incomingData: {
+        username: 'alice_1',
+        memberId: 'm_alice',
+        uid: 'uid_alice_platform2',
+        name: 'Alice',
+        status: 'active',
+        sessionVersion: 1,
+      },
+      dbBefore: {
+        ...dbBefore,
+        userDirectory: { alice_1: deletedDirDoc },
+        members: { ...dbBefore.members, m_alice: deletedMemberDoc },
+      },
+    }),
+    false
+  );
+
+  assertRule(
+    '[Cross-Platform Deletion] Stale session on Platform 3 DENIED from reactivating deleted /members/m_alice record',
+    evaluateFirestoreRule({
+      auth: { uid: 'uid_alice_platform3' },
+      collection: 'members',
+      docId: 'm_alice',
+      operation: 'update',
+      existingData: deletedMemberDoc,
+      incomingData: {
+        id: 'm_alice',
+        uid: 'uid_alice_platform3',
+        name: 'Alice',
+        username: 'alice_1',
+        status: 'active',
+        sessionVersion: 1,
+      },
+      dbBefore: {
+        ...dbBefore,
+        userDirectory: { alice_1: deletedDirDoc },
+        members: { ...dbBefore.members, m_alice: deletedMemberDoc },
+      },
     }),
     false
   );

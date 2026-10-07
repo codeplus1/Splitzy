@@ -40,6 +40,9 @@ import {
   cloudCompletePinLoginWithNewPassword,
   cloudLogoutUserSession,
   cloudDeleteUserAccount,
+  verifyActiveAccountSession,
+  subscribeToAccountStatus,
+  onGlobalAccountRevoked,
   generateDefaultUsername,
   normalizeUsername,
   AppUser,
@@ -221,16 +224,38 @@ export default function App() {
     return () => unsubAuth();
   }, []);
 
-  // Ensure the current user's profile has a unique @username registered in Firestore userDirectory (unless in Temporary Use mode)
+  // 1b. Listen for global account revocation events (e.g. account deleted on another platform)
   useEffect(() => {
-    if (!currentUser?.uid) return;
+    const unsubRevoke = onGlobalAccountRevoked(event => {
+      const cleanState = resetStorage();
+      setLastLoggedOutUsername('');
+      setOnboardingAuthTab('register');
+      setAppState(cleanState);
+      setActiveGroupId(null);
+      setIsEditProfileOpen(false);
+      setIsSettingsOpen(false);
+      setIsSecurityCenterOpen(false);
+      setIsAppLocked(false);
+      setCurrentUser(getOrCreateLocalUser());
+      showToast(
+        event.message ||
+          'Your account was deleted or revoked on another platform. You have been signed out.',
+        'error'
+      );
+    });
+    return () => unsubRevoke();
+  }, []);
+
+  // 1c. Verify existing local session against the shared Firestore backend on startup, tab focus, and reconnect,
+  //     and attach real-time cross-platform account status listener (`subscribeToAccountStatus`)
+  useEffect(() => {
     const myProfile =
       appState.userProfile ||
       appState.members.find(m => m.id === appState.currentUserId);
     if (!myProfile) return;
 
     if (myProfile.isTemporary) {
-      if (myProfile.uid !== currentUser.uid) {
+      if (currentUser?.uid && myProfile.uid !== currentUser.uid) {
         const updatedTemp: Member = {
           ...myProfile,
           uid: currentUser.uid,
@@ -244,25 +269,58 @@ export default function App() {
       return;
     }
 
-    const assignedUsername =
-      myProfile.username || generateDefaultUsername(myProfile.name, currentUser.uid);
+    let isDisposed = false;
 
-    if (!myProfile.username) {
-      const enriched: Member = {
-        ...myProfile,
-        username: assignedUsername,
-        uid: myProfile.uid || currentUser.uid,
-      };
-      setAppState(prev => ({
-        ...prev,
-        userProfile: enriched,
-        members: prev.members.map(m => (m.id === enriched.id ? enriched : m)),
-      }));
-      cloudRegisterOrUpdateUserProfile(enriched);
-    } else if (myProfile.uid === currentUser.uid) {
-      cloudRegisterOrUpdateUserProfile(myProfile);
-    }
-  }, [currentUser?.uid, appState.userProfile?.id, appState.userProfile?.isTemporary, appState.currentUserId]);
+    const verifyAndSyncActiveSession = async () => {
+      const check = await verifyActiveAccountSession(myProfile);
+      if (!check.valid || isDisposed) return;
+
+      // Only after backend confirms the account is active, ensure legacy accounts without a handle get one
+      if (!myProfile.username && currentUser?.uid) {
+        const assignedUsername = generateDefaultUsername(myProfile.name, currentUser.uid);
+        const enriched: Member = {
+          ...myProfile,
+          username: assignedUsername,
+          uid: myProfile.uid || currentUser.uid,
+          status: 'active',
+        };
+        setAppState(prev => ({
+          ...prev,
+          userProfile: enriched,
+          members: prev.members.map(m => (m.id === enriched.id ? enriched : m)),
+        }));
+        cloudRegisterOrUpdateUserProfile(enriched);
+      }
+    };
+
+    verifyAndSyncActiveSession();
+
+    const unsubStatus = subscribeToAccountStatus(myProfile);
+
+    const handleVisibilityOrOnline = () => {
+      if (document.visibilityState === 'visible') {
+        verifyActiveAccountSession(myProfile);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrOnline);
+    window.addEventListener('focus', handleVisibilityOrOnline);
+    window.addEventListener('online', handleVisibilityOrOnline);
+
+    return () => {
+      isDisposed = true;
+      unsubStatus();
+      document.removeEventListener('visibilitychange', handleVisibilityOrOnline);
+      window.removeEventListener('focus', handleVisibilityOrOnline);
+      window.removeEventListener('online', handleVisibilityOrOnline);
+    };
+  }, [
+    currentUser?.uid,
+    appState.userProfile?.id,
+    appState.userProfile?.username,
+    appState.userProfile?.isTemporary,
+    appState.currentUserId,
+  ]);
 
   // 2. Real-time synchronization strictly SCOPED to the authenticated user's groups
   const isUserLoggedIn = Boolean(appState.userProfile?.id || appState.currentUserId);

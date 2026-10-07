@@ -2,7 +2,7 @@
   "entities": {
     "groups": {
       "title": "Group",
-      "description": "Expense sharing group containing participants, expenses, and post-settlement retention metadata",
+      "description": "Expense sharing group containing participants and expenses",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
@@ -16,14 +16,6 @@
           "items": { "type": "string" }
         },
         "inviteCode": { "type": "string" },
-        "settled": { "type": "boolean" },
-        "settledAt": { "type": "number" },
-        "retentionOption": {
-          "type": "string",
-          "enum": ["3_days", "15_days", "1_month"]
-        },
-        "scheduledDeleteAt": { "type": "number" },
-        "keepGroup": { "type": "boolean" },
         "createdAt": { "type": "string" }
       },
       "required": ["id", "name", "baseCurrency"]
@@ -46,6 +38,9 @@
         "color": { "type": "string" },
         "passwordHash": { "type": "string" },
         "pinHash": { "type": "string" },
+        "status": { "type": "string" },
+        "deletedAt": { "type": "string" },
+        "sessionVersion": { "type": "number" },
         "createdAt": { "type": "string" }
       },
       "required": ["id", "uid", "name"]
@@ -63,6 +58,9 @@
         "color": { "type": "string" },
         "passwordHash": { "type": "string" },
         "pinHash": { "type": "string" },
+        "status": { "type": "string" },
+        "deletedAt": { "type": "string" },
+        "sessionVersion": { "type": "number" },
         "updatedAt": { "type": "string" }
       },
       "required": ["username", "memberId", "uid", "name"]
@@ -97,7 +95,6 @@
         "notes": { "type": "string" },
         "receiptUrl": { "type": "string" },
         "receiptName": { "type": "string" },
-        "receiptStoragePath": { "type": "string" },
         "createdAt": { "type": "string" }
       },
       "required": ["id", "groupId", "title", "baseAmount", "paidBy"]
