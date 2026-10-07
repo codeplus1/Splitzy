@@ -14,6 +14,7 @@ export interface Member {
   paymentInfo?: string; // Interac e-Transfer email, UPI ID, Bank ID, PayPal handle
   passwordHash?: string; // Salted SHA-256 hex digest of user's account login password
   pinHash?: string; // Salted SHA-256 hex digest of user's 4-digit App Lock PIN
+  isTemporary?: boolean; // True when user selected Temporary Use (no account/registration required)
   createdAt: string;
 }
 

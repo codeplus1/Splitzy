@@ -6,6 +6,7 @@ import {
   ExpenseShare,
   SettlementRecord,
   SupportedLanguage,
+  CalendarType,
   UserSecurityProfile,
 } from '../types';
 
@@ -19,6 +20,8 @@ export interface AppState {
   activeGroupId: string | null;
   theme: 'light' | 'dark' | 'system';
   language: SupportedLanguage;
+  defaultCurrency?: string;
+  defaultCalendar?: CalendarType;
   currentUserId: string; // for personal balance perspective
   userProfile?: Member; // The primary owner/user profile saved when opening the app
   pendingGroupIds?: string[]; // IDs of groups created locally in this session pending cloud confirmation
@@ -118,9 +121,26 @@ export function clearAllLocalLocksAndSessionKeys(): void {
 }
 
 export function getInitialCleanState(): AppState {
+  let cachedUid = 'u_default';
+  try {
+    cachedUid =
+      localStorage.getItem(AUTHORITATIVE_AUTH_UID_KEY) || `u_${Date.now().toString(36)}`;
+  } catch {
+    // Ignore storage issues
+  }
+  const defaultMemberId = `m_owner_${cachedUid.replace(/[^a-zA-Z0-9]/g, '').slice(-8) || 'me'}`;
+  const defaultMember: Member = {
+    id: defaultMemberId,
+    uid: cachedUid,
+    name: 'You',
+    avatar: '👨‍💻',
+    color: '#101D2D',
+    createdAt: new Date().toISOString(),
+  };
+
   return {
     groups: [],
-    members: [],
+    members: [defaultMember],
     groupMembers: [],
     expenses: [],
     expenseShares: [],
@@ -128,7 +148,10 @@ export function getInitialCleanState(): AppState {
     activeGroupId: null,
     theme: 'light',
     language: 'en',
-    currentUserId: '',
+    defaultCurrency: 'NPR',
+    defaultCalendar: 'BS',
+    currentUserId: defaultMemberId,
+    userProfile: defaultMember,
     pendingGroupIds: [],
     pendingExpenseIds: [],
     pendingSettlementIds: [],
@@ -177,7 +200,20 @@ export function loadAppState(): AppState {
     const loadedMembers = parsed.members || [];
     const currentMember =
       loadedMembers.find(m => m.id === parsed.currentUserId) || loadedMembers[0];
-    const resolvedUserProfile = parsed.userProfile || currentMember || undefined;
+    let resolvedUserProfile = parsed.userProfile || currentMember || undefined;
+
+    if (!resolvedUserProfile) {
+      const cachedUid =
+        localStorage.getItem(AUTHORITATIVE_AUTH_UID_KEY) || `u_${Date.now().toString(36)}`;
+      resolvedUserProfile = {
+        id: `m_owner_${cachedUid.replace(/[^a-zA-Z0-9]/g, '').slice(-8) || 'me'}`,
+        uid: cachedUid,
+        name: 'You',
+        avatar: '👨‍💻',
+        color: '#101D2D',
+        createdAt: new Date().toISOString(),
+      };
+    }
 
     if (
       resolvedUserProfile &&
@@ -196,7 +232,9 @@ export function loadAppState(): AppState {
       activeGroupId: parsed.activeGroupId ?? null,
       theme: parsed.theme || 'light',
       language: parsed.language || 'en',
-      currentUserId: parsed.currentUserId || resolvedUserProfile?.id || '',
+      defaultCurrency: parsed.defaultCurrency || parsed.groups?.[0]?.baseCurrency || 'NPR',
+      defaultCalendar: parsed.defaultCalendar || parsed.groups?.[0]?.preferredCalendar || 'BS',
+      currentUserId: parsed.currentUserId || resolvedUserProfile.id,
       userProfile: resolvedUserProfile,
       pendingGroupIds: parsed.pendingGroupIds || [],
       pendingExpenseIds: parsed.pendingExpenseIds || [],
@@ -261,12 +299,6 @@ export function reconcileAppState(
     settlements: SettlementRecord[];
   }
 ): AppState {
-  // If the user is currently logged out on this device (no active userProfile and no currentUserId),
-  // do NOT populate local state from background cloud listeners until they log in or register.
-  if (!local.userProfile && !local.currentUserId) {
-    return local;
-  }
-
   const deletedExpenseSet = new Set(local.deletedExpenseIds || []);
   const deletedGroupSet = new Set(local.deletedGroupIds || []);
   const pendingGroupSet = new Set(local.pendingGroupIds || []);

@@ -731,6 +731,66 @@ async function main() {
     await runCheck('[7. Storage] Owner Alice can delete her own receipt file', async () => {
       await assertSucceeds(deleteObject(ref(aliceStorage, receiptPath)));
     });
+
+    // =========================================================================
+    // 8. POST-SETTLEMENT RETENTION & AUTOMATIC CLEANUP RULE CHECKS
+    // =========================================================================
+    await runCheck('[8. Retention] Group participant Bob can mark g_alpha as settled with 3_days, 15_days, or 1_month retention and settledAt timestamp', async () => {
+      const now = 1768046400000;
+      const dayMs = 24 * 60 * 60 * 1000;
+      await assertSucceeds(
+        updateDoc(doc(bobDb, 'groups', 'g_alpha'), {
+          settled: true,
+          settledAt: now,
+          retentionOption: '3_days',
+          scheduledDeleteAt: now + 3 * dayMs,
+          keepGroup: false,
+        })
+      );
+      await assertSucceeds(
+        updateDoc(doc(bobDb, 'groups', 'g_alpha'), {
+          settled: true,
+          settledAt: now,
+          retentionOption: '15_days',
+          scheduledDeleteAt: now + 15 * dayMs,
+          keepGroup: false,
+        })
+      );
+      await assertSucceeds(
+        updateDoc(doc(bobDb, 'groups', 'g_alpha'), {
+          settled: true,
+          settledAt: now,
+          retentionOption: '1_month',
+          scheduledDeleteAt: now + 30 * dayMs,
+          keepGroup: false,
+        })
+      );
+    });
+
+    await runCheck('[8. Retention] Adding a new expense allows participant Bob to cancel pending cleanup and return group to active state', async () => {
+      await assertSucceeds(
+        updateDoc(doc(bobDb, 'groups', 'g_alpha'), {
+          settled: false,
+          settledAt: null,
+          scheduledDeleteAt: null,
+          keepGroup: false,
+        })
+      );
+    });
+
+    await runCheck('[8. Retention] Invalid retentionOption or settled=true without numeric settledAt is DENIED by Firestore security rules', async () => {
+      await assertFails(
+        updateDoc(doc(aliceDb, 'groups', 'g_alpha'), {
+          retentionOption: '99_days',
+        })
+      );
+      await assertFails(
+        updateDoc(doc(aliceDb, 'groups', 'g_alpha'), {
+          settled: true,
+          settledAt: null,
+        })
+      );
+    });
   } finally {
     if (testEnv) {
       await testEnv.cleanup();

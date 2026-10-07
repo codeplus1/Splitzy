@@ -189,7 +189,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="flex items-center gap-2">
                   <User className="w-4 h-4 text-[var(--brand-text)]" />
                   <h3 className="text-xs font-semibold text-[var(--text-secondary)]">
-                    Profile & Unique Username
+                    {currentMember.isTemporary
+                      ? language === 'fr'
+                        ? 'Mode d’utilisation · Temporaire'
+                        : 'Usage Mode · Temporary Use'
+                      : 'Profile & Unique Username'}
                   </h3>
                 </div>
               </div>
@@ -206,26 +210,49 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <div className="text-sm font-bold text-[var(--text-primary)] truncate">
                       {currentMember.name}
                     </div>
-                    {currentMember.username && (
+                    {currentMember.isTemporary ? (
+                      <div className="text-xs text-[var(--text-secondary)] truncate">
+                        {language === 'fr'
+                          ? 'Utilisation temporaire sans compte'
+                          : 'Temporary Use · No account required'}
+                      </div>
+                    ) : currentMember.username ? (
                       <div className="text-xs font-mono font-semibold text-[var(--brand-text)] truncate">
                         @{currentMember.username}
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
                   {onEditProfile && (
                     <button
+                      id={
+                        currentMember.isTemporary
+                          ? 'settings-upgrade-long-term-btn'
+                          : 'settings-edit-profile-btn'
+                      }
                       type="button"
                       onClick={() => {
                         onClose();
                         onEditProfile();
                       }}
-                      className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs shrink-0"
+                      className={
+                        currentMember.isTemporary
+                          ? 'ui-btn ui-btn-primary py-1.5 px-3 text-xs shrink-0'
+                          : 'ui-btn ui-btn-secondary py-1.5 px-3 text-xs shrink-0'
+                      }
                     >
-                      <Pencil className="w-3.5 h-3.5 text-[var(--brand-text)]" />
-                      <span>{language === 'fr' ? 'Modifier' : 'Edit Profile'}</span>
+                      <Pencil className="w-3.5 h-3.5" />
+                      <span>
+                        {currentMember.isTemporary
+                          ? language === 'fr'
+                            ? 'Créer un compte'
+                            : 'Create Account'
+                          : language === 'fr'
+                          ? 'Modifier'
+                          : 'Edit Profile'}
+                      </span>
                     </button>
                   )}
                 </div>
@@ -582,22 +609,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </h3>
               </div>
               <div className="flex items-center gap-1.5 text-xs font-medium">
-                {syncStatus === 'connected' && (
+                {syncStatus === 'offline' ? (
+                  <span className="flex items-center gap-1 text-[var(--danger-text)]">
+                    <CloudOff className="w-3.5 h-3.5" />
+                    Offline Mode
+                  </span>
+                ) : syncStatus === 'syncing' || syncStatus === 'saving' ? (
+                  <span className="flex items-center gap-1 text-[var(--warning-text)]">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Syncing automatically...
+                  </span>
+                ) : (
                   <span className="flex items-center gap-1 text-[var(--success-text)]">
                     <Cloud className="w-3.5 h-3.5" />
                     Auto-Sync Active
-                  </span>
-                )}
-                {syncStatus === 'syncing' && (
-                  <span className="flex items-center gap-1 text-[var(--warning-text)]">
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    Syncing changes...
-                  </span>
-                )}
-                {(syncStatus === 'offline' || syncStatus === 'error') && (
-                  <span className="flex items-center gap-1 text-[var(--danger-text)]">
-                    <CloudOff className="w-3.5 h-3.5" />
-                    Offline / Retrying
                   </span>
                 )}
               </div>
@@ -609,21 +634,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   Automatic Firestore Cloud Sync
                 </p>
                 <p className="text-xs text-[var(--text-secondary)]">
-                  All expenses, settlements, and member changes sync instantly to your cloud database.
+                  All expenses, settlements, and member changes sync automatically to your cloud database in real time.
                 </p>
               </div>
 
-              {onManualSync && (
-                <button
-                  id="settings-manual-sync-btn"
-                  onClick={onManualSync}
-                  className="ui-btn ui-btn-secondary py-2 px-3 text-xs shrink-0"
-                  title="Force refresh synchronization with cloud"
-                >
-                  <RefreshCw className="w-3.5 h-3.5 text-[var(--success-text)]" />
-                  <span>Sync Now</span>
-                </button>
-              )}
+              <span className="ui-badge ui-badge-success shrink-0">
+                <Check className="w-3 h-3" />
+                <span>{syncStatus === 'offline' ? 'Queued Offline' : 'Live Sync'}</span>
+              </span>
             </div>
 
             {userId && (

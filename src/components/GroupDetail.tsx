@@ -16,6 +16,10 @@ import {
   QrCode,
   Lock,
   AtSign,
+  UserPlus,
+  Clock,
+  ShieldCheck,
+  Trash2,
   X,
 } from 'lucide-react';
 import {
@@ -26,17 +30,28 @@ import {
   SettlementRecord,
   SupportedLanguage,
   CalendarType,
+  RetentionOption,
 } from '../types';
 import { MemberAvatar } from './MemberAvatar';
 import { SwipeableExpenseItem } from './SwipeableExpenseItem';
 import { ShareGroupModal } from './ShareGroupModal';
+import { cloudLookupRegisteredUser } from '../services/firebase';
 import { formatMoney, SUPPORTED_CURRENCIES } from '../core/currency';
 import {
   calculateMemberBalances,
   optimizeSettlements,
 } from '../core/calculation';
 import { translate, formatSettlementText } from '../core/i18n';
-import { cloudLookupRegisteredUser } from '../services/firebase';
+import {
+  RETENTION_OPTIONS,
+  DEFAULT_RETENTION_OPTION,
+  getGroupCleanupCountdownInfo,
+  getRetentionLabel,
+  getRetentionOptionMeta,
+  buildSettledGroupState,
+  buildKeepGroupState,
+  setGroupKeepRetention,
+} from '../core/retention';
 
 interface GroupDetailProps {
   group: Group;
@@ -86,7 +101,6 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
 
   const [newMemberIdentifier, setNewMemberIdentifier] = useState('');
-  const [isLookingUpMember, setIsLookingUpMember] = useState(false);
 
   // Settings inputs
   const [groupNameEdit, setGroupNameEdit] = useState(group.name);
@@ -94,14 +108,18 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
   const [groupCalendarEdit, setGroupCalendarEdit] = useState<CalendarType>(
     group.preferredCalendar
   );
+  const [groupRetentionEdit, setGroupRetentionEdit] = useState<RetentionOption>(
+    group.retentionOption || DEFAULT_RETENTION_OPTION
+  );
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
     setGroupNameEdit(group.name);
     setGroupCurrencyEdit(group.baseCurrency);
     setGroupCalendarEdit(group.preferredCalendar);
+    setGroupRetentionEdit(group.retentionOption || DEFAULT_RETENTION_OPTION);
     setShowDeleteConfirm(false);
-  }, [group.id, group.name, group.baseCurrency, group.preferredCalendar]);
+  }, [group.id, group.name, group.baseCurrency, group.preferredCalendar, group.retentionOption]);
 
   // Filtered group expenses
   const groupExpenses = expenses
@@ -124,11 +142,10 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
   );
   const optimizedDebts = optimizeSettlements(balances, group.baseCurrency);
 
-  // Check if current user is owed money (is a creditor in at least one pending settlement)
   const currentUserCreditorDebts = optimizedDebts.filter(
     d => currentUserId && d.toMemberId === currentUserId
   );
-  const canCurrentUserSettle = currentUserCreditorDebts.length > 0;
+  const canCurrentUserSettle = optimizedDebts.length > 0;
   const isGroupFullySettled = optimizedDebts.length === 0;
 
   const totalGroupSpent = groupExpenses.reduce((acc, e) => acc + e.baseAmount, 0);
@@ -182,6 +199,8 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
     setTimeout(() => setCopiedSummary(false), 2500);
   };
 
+  const [isLookingUpMember, setIsLookingUpMember] = useState(false);
+
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isLookingUpMember) return;
@@ -196,27 +215,27 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
         return;
       }
 
-      const foundMember = lookup.member;
+      const verifiedUser = lookup.member;
       if (
         members.some(
           m =>
-            m.id === foundMember.id ||
+            m.id === verifiedUser.id ||
             (m.username &&
-              foundMember.username &&
-              m.username.toLowerCase() === foundMember.username.toLowerCase())
+              verifiedUser.username &&
+              m.username.toLowerCase() === verifiedUser.username.toLowerCase())
         )
       ) {
         onShowToast(
-          `${foundMember.name} is already a member of this group.`,
+          `@${verifiedUser.username || verifiedUser.name} is already a member of this group.`,
           'error'
         );
         return;
       }
 
-      onAddMemberToGroup(foundMember);
+      onAddMemberToGroup(verifiedUser);
       setNewMemberIdentifier('');
       onShowToast(
-        `Verified & added ${foundMember.name} to the group!`,
+        `Verified & added @${verifiedUser.username || verifiedUser.id} (${verifiedUser.name}) to the group!`,
         'success'
       );
     } finally {
@@ -227,16 +246,131 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
     if (!groupNameEdit.trim()) return;
-    onUpdateGroup({
-      name: groupNameEdit.trim(),
-      baseCurrency: groupCurrencyEdit,
-      preferredCalendar: groupCalendarEdit,
-    });
+    const nextGroupState = group.settled
+      ? buildSettledGroupState(
+          {
+            ...group,
+            name: groupNameEdit.trim(),
+            baseCurrency: groupCurrencyEdit,
+            preferredCalendar: groupCalendarEdit,
+          },
+          group.settledAt || Date.now(),
+          groupRetentionEdit
+        )
+      : {
+          name: groupNameEdit.trim(),
+          baseCurrency: groupCurrencyEdit,
+          preferredCalendar: groupCalendarEdit,
+          retentionOption: groupRetentionEdit,
+        };
+    onUpdateGroup(nextGroupState);
     onShowToast(translate(language, 'saveChanges'), 'success');
   };
 
+  const cleanupInfo = getGroupCleanupCountdownInfo(group);
+
   return (
     <div className="space-y-4 pb-14">
+      {/* Group Settled & Automatic Cleanup Status Banner */}
+      {group.settled && (
+        <div
+          id="group-settled-cleanup-banner"
+          className="ui-card p-4 sm:p-5 border-emerald-300 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/30 space-y-3"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0 mt-0.5">
+                {group.keepGroup ? (
+                  <ShieldCheck className="w-4 h-4" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4" />
+                )}
+              </div>
+              <div className="space-y-1">
+                <h2 className="text-xs sm:text-sm font-bold text-emerald-950 dark:text-emerald-100">
+                  Group settled successfully.
+                </h2>
+                {group.keepGroup ? (
+                  <p className="text-xs text-emerald-800 dark:text-emerald-200 font-medium">
+                    Automatic cleanup is paused — this group is explicitly retained.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-xs text-emerald-800 dark:text-emerald-200 font-semibold">
+                      This group will be automatically deleted in{' '}
+                      {getRetentionOptionMeta(group.retentionOption).labelEn}.
+                    </p>
+                    {cleanupInfo.scheduledDateFormatted && (
+                      <p className="text-[11px] text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                        <Clock className="w-3 h-3 shrink-0" />
+                        <span>
+                          Scheduled deletion date:{' '}
+                          <strong>{cleanupInfo.scheduledDateFormatted}</strong> (
+                          {cleanupInfo.remainingDays}{' '}
+                          {cleanupInfo.remainingDays === 1 ? 'day' : 'days'} remaining)
+                        </span>
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap shrink-0">
+              {!group.keepGroup ? (
+                <button
+                  id="keep-group-btn"
+                  type="button"
+                  onClick={() => {
+                    onUpdateGroup(buildKeepGroupState(group));
+                    onShowToast(
+                      'Group will be kept and automatic deletion is disabled.',
+                      'success'
+                    );
+                  }}
+                  className="px-3 py-1.5 text-[11px] font-semibold rounded-lg bg-white dark:bg-zinc-900 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700 hover:bg-emerald-100/60 transition-all cursor-pointer flex items-center gap-1.5"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Keep Group</span>
+                </button>
+              ) : (
+                <button
+                  id="enable-auto-cleanup-btn"
+                  type="button"
+                  onClick={() => {
+                    onUpdateGroup(
+                      buildSettledGroupState(
+                        { ...group, keepGroup: false },
+                        Date.now(),
+                        group.retentionOption || '15_days'
+                      )
+                    );
+                    onShowToast(
+                      `Auto-cleanup re-enabled (${getRetentionOptionMeta(group.retentionOption).labelEn}).`,
+                      'info'
+                    );
+                  }}
+                  className="px-3 py-1.5 text-[11px] font-semibold rounded-lg bg-white dark:bg-zinc-900 text-emerald-800 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-700 hover:bg-emerald-100/60 transition-all cursor-pointer flex items-center gap-1.5"
+                >
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>Enable Auto-Delete</span>
+                </button>
+              )}
+
+              <button
+                id="delete-settled-group-now-btn"
+                type="button"
+                onClick={() => onDeleteGroup(group.id)}
+                className="px-3 py-1.5 text-[11px] font-semibold rounded-lg bg-rose-600 text-white hover:bg-rose-700 transition-all cursor-pointer flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete Now</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top Navigation & Group Header */}
       <div className="ui-card p-4 sm:p-5 space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -566,9 +700,9 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                   id="record-settlement-quick-btn"
                   onClick={() =>
                     onOpenSettleModal(
-                      currentUserCreditorDebts[0]?.fromMemberId,
-                      currentUserId,
-                      currentUserCreditorDebts[0]?.amount
+                      (currentUserCreditorDebts[0] || optimizedDebts[0])?.fromMemberId,
+                      (currentUserCreditorDebts[0] || optimizedDebts[0])?.toMemberId,
+                      (currentUserCreditorDebts[0] || optimizedDebts[0])?.amount
                     )
                   }
                   className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 active:scale-[0.96] transition-all cursor-pointer group shadow-2xs"
@@ -676,7 +810,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
             </div>
 
             {optimizedDebts.length === 0 ? (
-              <div className="p-6 text-center bg-[var(--accent-soft)]/50 rounded-xl border border-[var(--accent-border)] space-y-1.5">
+              <div className="p-6 text-center bg-[var(--accent-soft)]/50 rounded-xl border border-[var(--accent-border)] space-y-2.5">
                 <CheckCircle2 className="w-6 h-6 text-[var(--accent)] mx-auto" />
                 <h4 className="text-xs font-bold text-[var(--ink)]">
                   {translate(language, 'noSettlementsNeeded')}
@@ -684,6 +818,28 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                 <p className="text-[11px] text-[var(--ink-secondary)]">
                   Every participant in {group.name} is fully settled up.
                 </p>
+                {!group.settled && (
+                  <button
+                    id="mark-group-settled-btn"
+                    type="button"
+                    onClick={() => {
+                      const settledPatch = buildSettledGroupState(
+                        group,
+                        Date.now(),
+                        group.retentionOption || '15_days'
+                      );
+                      onUpdateGroup(settledPatch);
+                      onShowToast(
+                        `Group settled successfully. This group will be automatically deleted in ${getRetentionOptionMeta(settledPatch.retentionOption).labelEn}.`,
+                        'success'
+                      );
+                    }}
+                    className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-all cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Mark Group as Settled</span>
+                  </button>
+                )}
               </div>
             ) : (
               <div className="space-y-2">
@@ -752,31 +908,17 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                         </div>
                       </div>
 
-                      {isCurrentUserCreditor ? (
-                        <button
-                          onClick={() =>
-                            onOpenSettleModal(debtor.id, creditor.id, debt.amount)
-                          }
-                          className="self-end sm:self-auto px-3 py-1.5 text-[11px] font-semibold rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 shadow-xs transition-all duration-150 hover:-translate-y-[1px] active:translate-y-0 active:scale-[0.97] flex items-center gap-1.5 cursor-pointer group"
-                        >
-                          <CheckCircle2 className="w-3 h-3 transition-transform duration-150 group-hover:scale-110" />
-                          <span>
-                            {language === 'fr' ? 'Encaisser / Régler' : translate(language, 'settleUp')}
-                          </span>
-                        </button>
-                      ) : (
-                        <div
-                          className="self-end sm:self-auto px-2.5 py-1 text-[10px] font-medium rounded-lg bg-[var(--surface-subtle)] text-[var(--ink-secondary)] border border-[var(--border)] flex items-center gap-1.5"
-                          title={`Only ${creditor.name} (who receives this payment) can confirm and settle this transfer.`}
-                        >
-                          <Lock className="w-3 h-3 text-[var(--ink-muted)] shrink-0" />
-                          <span>
-                            {language === 'fr'
-                              ? `Seul ${creditor.name} peut régler`
-                              : `Only ${creditor.name} can settle`}
-                          </span>
-                        </div>
-                      )}
+                      <button
+                        onClick={() =>
+                          onOpenSettleModal(debtor.id, creditor.id, debt.amount)
+                        }
+                        className="self-end sm:self-auto px-3 py-1.5 text-[11px] font-semibold rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 shadow-xs transition-all duration-150 hover:-translate-y-[1px] active:translate-y-0 active:scale-[0.97] flex items-center gap-1.5 cursor-pointer group"
+                      >
+                        <CheckCircle2 className="w-3 h-3 transition-transform duration-150 group-hover:scale-110" />
+                        <span>
+                          {language === 'fr' ? 'Régler' : translate(language, 'settleUp')}
+                        </span>
+                      </button>
                     </div>
                   );
                 })}
@@ -836,7 +978,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
               </div>
             </div>
 
-            {/* Add Verified Registered Member Form */}
+            {/* Add Verified Unique User by @username Form */}
             <form onSubmit={handleAddMember} className="space-y-1.5">
               <div className="flex items-center gap-2">
                 <div className="flex items-center grow rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] focus-within:border-[var(--accent)] focus-within:ring-3 focus-within:ring-[var(--accent)]/10 transition-all overflow-hidden">
@@ -845,7 +987,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                   </span>
                   <input
                     type="text"
-                    placeholder="Enter registered user's @username or User ID..."
+                    placeholder="Enter user's unique @username or User ID..."
                     value={newMemberIdentifier}
                     onChange={e => setNewMemberIdentifier(e.target.value)}
                     className="w-full px-2.5 py-1.5 bg-transparent font-mono text-xs text-[var(--ink)] focus:outline-none"
@@ -860,7 +1002,7 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                 </button>
               </div>
               <p className="text-[10px] text-[var(--ink-muted)]">
-                Only users who have Splitze and a registered unique <code className="font-mono text-[var(--accent)]">@username</code> in the database can be added, or they can join using invite code <strong>#{group.inviteCode}</strong>.
+                Add any Splitze user directly by their unique <code className="font-mono text-[var(--accent)]">@username</code> in the database, or share invite code <strong>#{group.inviteCode}</strong>.
               </p>
             </form>
 
@@ -999,6 +1141,49 @@ export const GroupDetail: React.FC<GroupDetailProps> = ({
                     <option value="AD">Gregorian (AD)</option>
                   </select>
                 </div>
+              </div>
+
+              {/* Post-Settlement Automatic Retention Setting */}
+              <div className="space-y-1.5 pt-1">
+                <label className="text-[11px] font-semibold text-[var(--ink-secondary)] flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-[var(--accent)]" />
+                  <span>Auto-Cleanup Retention After Settlement</span>
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {RETENTION_OPTIONS.map(opt => {
+                    const isSelected = groupRetentionEdit === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => {
+                          setGroupRetentionEdit(opt.value);
+                          if (group.settled) {
+                            onUpdateGroup(
+                              buildSettledGroupState(
+                                group,
+                                group.settledAt || Date.now(),
+                                opt.value
+                              )
+                            );
+                          } else {
+                            onUpdateGroup({ retentionOption: opt.value });
+                          }
+                        }}
+                        className={`py-2 px-2.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-[var(--accent)] text-white border-[var(--accent)] shadow-2xs'
+                            : 'bg-[var(--surface-subtle)] text-[var(--ink-secondary)] border-[var(--border)] hover:text-[var(--ink)]'
+                        }`}
+                      >
+                        {language === 'fr' ? opt.labelFr : opt.labelEn}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-[var(--ink-muted)]">
+                  Once all balances are settled, this group will be scheduled for server-side cleanup after the selected retention period unless a new expense is added or you click Keep Group.
+                </p>
               </div>
 
               <div className="pt-1">

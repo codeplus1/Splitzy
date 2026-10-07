@@ -210,6 +210,10 @@ function isValidShareExpenseRelation(
   return false;
 }
 
+function isValidRetentionOption(opt: unknown): boolean {
+  return opt === '3_days' || opt === '15_days' || opt === '1_month';
+}
+
 function isOwnerGroupUpdate(
   auth: MockAuthContext | null,
   existing: any,
@@ -231,9 +235,38 @@ function isOwnerGroupUpdate(
     'memberUserIds',
     'inviteCode',
     'reviewNewMembers',
+    'settled',
+    'settledAt',
+    'retentionOption',
+    'scheduledDeleteAt',
+    'keepGroup',
+    'updatedAt',
   ]);
   const affected = getAffectedKeys(existing, incoming);
   return affected.every(k => allowed.has(k));
+}
+
+function isParticipantSettlementStatusUpdate(
+  auth: MockAuthContext | null,
+  existing: any,
+  incoming: any
+): boolean {
+  if (!isGroupMemberData(auth, existing) || !incoming) return false;
+  if (incoming.id !== existing.id) return false;
+  if (incoming.createdBy !== existing.createdBy) return false;
+  if (incoming.name !== existing.name) return false;
+  if (incoming.baseCurrency !== existing.baseCurrency) return false;
+  if (JSON.stringify(incoming.memberUserIds) !== JSON.stringify(existing.memberUserIds)) return false;
+  const allowed = new Set([
+    'settled',
+    'settledAt',
+    'retentionOption',
+    'scheduledDeleteAt',
+    'keepGroup',
+    'updatedAt',
+  ]);
+  const affected = getAffectedKeys(existing, incoming);
+  return affected.length > 0 && affected.every(k => allowed.has(k));
 }
 
 function isValidInviteJoin(
@@ -296,7 +329,13 @@ export function evaluateFirestoreRule(params: {
           typeof incomingData?.createdBy === 'string' &&
           incomingData.createdBy === auth!.uid &&
           Array.isArray(incomingData?.memberUserIds) &&
-          incomingData.memberUserIds.includes(auth!.uid)
+          incomingData.memberUserIds.includes(auth!.uid) &&
+          (!('settled' in incomingData) || typeof incomingData.settled === 'boolean') &&
+          (!('settledAt' in incomingData) ||
+            incomingData.settledAt === null ||
+            (typeof incomingData.settledAt === 'number' && incomingData.settledAt > 0)) &&
+          (!('retentionOption' in incomingData) ||
+            isValidRetentionOption(incomingData.retentionOption))
         );
       }
       if (operation === 'update') {
@@ -307,11 +346,18 @@ export function evaluateFirestoreRule(params: {
           incomingData.name.length > 0 &&
           typeof incomingData.baseCurrency === 'string' &&
           typeof incomingData.createdBy === 'string' &&
-          Array.isArray(incomingData.memberUserIds);
+          Array.isArray(incomingData.memberUserIds) &&
+          (!('settled' in incomingData) || typeof incomingData.settled === 'boolean') &&
+          (!('settledAt' in incomingData) ||
+            incomingData.settledAt === null ||
+            (typeof incomingData.settledAt === 'number' && incomingData.settledAt > 0)) &&
+          (!('retentionOption' in incomingData) ||
+            isValidRetentionOption(incomingData.retentionOption));
         if (!validSchema) return false;
         return (
           isOwnerGroupUpdate(auth, existingData, incomingData) ||
-          isValidInviteJoin(auth, dbBefore, dbAfter, docId, existingData, incomingData)
+          isValidInviteJoin(auth, dbBefore, dbAfter, docId, existingData, incomingData) ||
+          isParticipantSettlementStatusUpdate(auth, existingData, incomingData)
         );
       }
       if (operation === 'delete') {

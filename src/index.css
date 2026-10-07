@@ -228,6 +228,10 @@ body {
   gap: 0.625rem;
 }
 
+.ui-modal-body {
+  padding: 1.25rem;
+}
+
 .ui-label {
   display: inline-flex;
   align-items: center;

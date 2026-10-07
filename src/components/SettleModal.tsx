@@ -68,15 +68,6 @@ export const SettleModal: React.FC<SettleModalProps> = ({
       return;
     }
 
-    if (currentUserId && toId !== currentUserId) {
-      setError(
-        isFrench
-          ? 'Seul le membre qui reçoit le remboursement peut confirmer et régler ce paiement.'
-          : 'Only the member receiving the money back can confirm and record this settlement.'
-      );
-      return;
-    }
-
     setIsSubmitting(true);
 
     const record: SettlementRecord = {

@@ -191,7 +191,15 @@ service cloud.firestore {
       );
     }
 
-    // Group Owner Update vs Invite-Code Join Transition
+    // Group Owner Update vs Participant Settlement State Transition vs Invite-Code Join Transition
+    function isValidRetentionOption(opt) {
+      return opt is string && (
+        opt == '3_days' ||
+        opt == '15_days' ||
+        opt == '1_month'
+      );
+    }
+
     function isOwnerGroupUpdate() {
       return isGroupOwnerData(existing()) &&
         incoming().id == existing().id &&
@@ -211,6 +219,28 @@ service cloud.firestore {
           'inviteCode',
           'reviewNewMembers',
           'createdBy',
+          'updatedAt',
+          'settled',
+          'settledAt',
+          'retentionOption',
+          'scheduledDeleteAt',
+          'keepGroup'
+        ]);
+    }
+
+    function isParticipantSettlementStatusUpdate() {
+      return isGroupMemberData(existing()) &&
+        incoming().id == existing().id &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().name == existing().name &&
+        incoming().baseCurrency == existing().baseCurrency &&
+        incoming().memberUserIds == existing().memberUserIds &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'settled',
+          'settledAt',
+          'retentionOption',
+          'scheduledDeleteAt',
+          'keepGroup',
           'updatedAt'
         ]);
     }
@@ -250,7 +280,12 @@ service cloud.firestore {
         data.memberUserIds is list &&
         data.memberUserIds.size() >= 1 &&
         data.memberUserIds.size() <= 100 &&
-        (!('inviteCode' in data) || isValidInviteCode(data.inviteCode));
+        (!('inviteCode' in data) || isValidInviteCode(data.inviteCode)) &&
+        (!('settled' in data) || data.settled is bool) &&
+        (!('settledAt' in data) || data.settledAt == null || (data.settledAt is number && data.settledAt > 0)) &&
+        (!('retentionOption' in data) || isValidRetentionOption(data.retentionOption)) &&
+        (!('scheduledDeleteAt' in data) || data.scheduledDeleteAt == null || (data.scheduledDeleteAt is number && data.scheduledDeleteAt > 0)) &&
+        (!('keepGroup' in data) || data.keepGroup is bool);
     }
 
     function isValidMember(data) {
@@ -392,7 +427,7 @@ service cloud.firestore {
       allow update: if isSignedIn() &&
         isValidId(groupId) &&
         isValidGroup(incoming()) &&
-        (isOwnerGroupUpdate() || isValidInviteJoin(groupId));
+        (isOwnerGroupUpdate() || isValidInviteJoin(groupId) || isParticipantSettlementStatusUpdate());
       allow delete: if isSignedIn() &&
         isValidId(groupId) &&
         (resource == null || isGroupOwnerData(existing()));

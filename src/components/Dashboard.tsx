@@ -8,12 +8,14 @@ import {
   ArrowRight,
   KeyRound,
   Check,
-  Pencil,
+  Clock,
+  ShieldCheck,
 } from 'lucide-react';
 import { Group, Member, GroupMember, Expense, ExpenseShare, SettlementRecord, SupportedLanguage } from '../types';
 import { translate } from '../core/i18n';
 import { formatMoney } from '../core/currency';
 import { calculateMemberBalances } from '../core/calculation';
+import { getGroupCleanupCountdownInfo } from '../core/retention';
 import { MemberAvatar } from './MemberAvatar';
 import { SplitzeLogo } from './SplitzeLogo';
 
@@ -128,7 +130,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   className="ui-btn-primary group px-4 py-2 text-xs shadow-xs"
                 >
                   <Plus className="w-3.5 h-3.5 group-hover:rotate-90 transition-transform duration-200" />
-                  <span>{isFrench ? 'Créer un premier groupe' : 'Start your first group'}</span>
+                  <span>{isFrench ? 'Créer un groupe' : 'Create Group'}</span>
                   <ArrowRight className="w-3.5 h-3.5 ml-0.5 group-hover:translate-x-0.5 transition-transform" />
                 </button>
 
@@ -286,15 +288,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
       </div>
 
       {/* Active Groups Section */}
-      <div className="space-y-3.5">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
-            <Users className="w-4 h-4 text-[var(--accent)] shrink-0" />
-            <h2 className="text-sm sm:text-lg font-bold text-[var(--ink)] tracking-tight leading-tight truncate">
+      <div className="space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <h2 className="text-base sm:text-lg font-bold font-display text-[var(--ink)] tracking-tight leading-tight truncate">
               {translate(language, 'activeGroups')}
             </h2>
-            <span className="px-2 py-0.5 rounded-full bg-[var(--surface-subtle)] border border-[var(--border)] text-[11px] font-bold font-mono text-[var(--ink)] flex items-center justify-center shrink-0">
-              {groups.length}
+            <span className="text-xs font-mono font-semibold text-[var(--ink-muted)] tnum shrink-0">
+              · {groups.length}
             </span>
           </div>
 
@@ -303,10 +304,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <button
                 id="dashboard-join-group-btn"
                 onClick={onJoinGroupClick}
-                className="ui-btn-secondary group px-3 py-1.5 text-xs whitespace-nowrap shrink-0"
+                className="ui-btn-secondary group h-9 px-3.5 text-xs whitespace-nowrap shrink-0"
                 title="Join a private group with invite code"
               >
-                <KeyRound className="w-3.5 h-3.5 text-[var(--accent)] shrink-0 group-hover:rotate-12 transition-transform" />
+                <KeyRound className="w-3.5 h-3.5 text-[var(--accent)] shrink-0" />
                 <span className="whitespace-nowrap">{isFrench ? 'Rejoindre un groupe' : 'Join Group'}</span>
               </button>
             )}
@@ -314,7 +315,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <button
               id="dashboard-new-group-btn"
               onClick={onCreateGroupClick}
-              className="ui-btn-primary group px-3.5 py-1.5 text-xs whitespace-nowrap shrink-0"
+              className="ui-btn-primary group h-9 px-4 text-xs whitespace-nowrap shrink-0"
             >
               <Plus className="w-3.5 h-3.5 shrink-0 group-hover:rotate-90 transition-transform duration-200" />
               <span className="whitespace-nowrap">{translate(language, 'newGroup')}</span>
@@ -350,6 +351,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
             const userBalance = balances.find(b => b.memberId === currentUserId);
             const userNet = userBalance?.netBalance || 0;
+            const countdown = getGroupCleanupCountdownInfo(group);
 
             return (
               <div
@@ -364,40 +366,61 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     onSelectGroup(group.id);
                   }
                 }}
-                className="group relative bg-[var(--surface)] rounded-2xl p-4 sm:p-5 border border-[var(--border)] hover:border-[var(--accent)]/40 shadow-[var(--shadow-xs)] hover:shadow-[var(--shadow-md)] hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.99] transition-all cursor-pointer flex flex-col justify-between focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
+                className="group relative bg-[var(--surface)] rounded-2xl p-5 border border-[var(--border)] hover:border-[var(--border-strong)] shadow-[var(--shadow-xs)] hover:shadow-[var(--shadow-md)] hover:-translate-y-0.5 active:translate-y-0 transition-all cursor-pointer flex flex-col justify-between focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
               >
                 <div>
-                  {/* Top Row: Group Name and Circular Arrow Button */}
-                  <div className="flex items-start justify-between gap-2.5 mb-2">
-                    <h3 className="font-sans font-bold text-base sm:text-[17px] text-[var(--ink)] group-hover:text-[var(--accent)] transition-colors leading-snug tracking-tight">
-                      {group.name}
-                    </h3>
+                  {/* Top Row: Group Name and Chevron */}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                      <h3 className="font-display font-bold text-base sm:text-[17px] text-[var(--ink)] group-hover:text-[var(--accent)] transition-colors leading-snug tracking-tight truncate">
+                        {group.name}
+                      </h3>
 
-                    <div className="w-7 h-7 rounded-full bg-[var(--surface-subtle)] text-[var(--ink-muted)] group-hover:bg-[var(--accent-soft)] group-hover:text-[var(--accent)] group-hover:translate-x-0.5 flex items-center justify-center transition-all shrink-0">
-                      <ChevronRight className="w-4 h-4" />
+                      {/* Unboxed Metadata Line (Zero-Pill Discipline) */}
+                      <div className="flex items-center gap-1.5 flex-wrap text-xs text-[var(--ink-secondary)]">
+                        <span className="font-mono font-semibold text-[var(--ink)]">
+                          {group.baseCurrency}
+                        </span>
+                        <span aria-hidden="true" className="text-[var(--ink-muted)]">·</span>
+                        <span>{group.preferredCalendar}</span>
+                        {group.inviteCode && (
+                          <>
+                            <span aria-hidden="true" className="text-[var(--ink-muted)]">·</span>
+                            <span className="font-mono text-[var(--ink-secondary)]">
+                              #{group.inviteCode}
+                            </span>
+                          </>
+                        )}
+                        {group.settled && (
+                          <>
+                            <span aria-hidden="true" className="text-[var(--ink-muted)]">·</span>
+                            <span className="inline-flex items-center gap-1 font-semibold text-[#087F5B] dark:text-[#63E6BE]">
+                              {group.keepGroup ? (
+                                <>
+                                  <ShieldCheck className="w-3 h-3" />
+                                  <span>Settled (Kept)</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Clock className="w-3 h-3" />
+                                  <span>
+                                    Settled · {countdown.remainingDays ?? 15}d left
+                                  </span>
+                                </>
+                              )}
+                            </span>
+                          </>
+                        )}
+                      </div>
                     </div>
+
+                    <ChevronRight className="w-4 h-4 text-[var(--ink-muted)] group-hover:text-[var(--ink)] group-hover:translate-x-0.5 transition-all shrink-0 mt-1" />
                   </div>
 
-                  {/* Badges Row: [ MUR ]  📅 AD  [ #E2FDH7 ] */}
-                  <div className="flex items-center gap-2 flex-wrap mb-4">
-                    <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-[var(--surface-subtle)] text-[var(--ink)] border border-[var(--border-subtle)]">
-                      {group.baseCurrency}
-                    </span>
-                    <span className="text-[11px] font-medium px-1 py-0.5 text-[var(--ink-secondary)] inline-flex items-center gap-1">
-                      <Calendar className="w-3 h-3 text-[var(--ink-muted)]" />
-                      {group.preferredCalendar}
-                    </span>
-                    {group.inviteCode && (
-                      <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded-md bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--accent-border)]">
-                        #{group.inviteCode}
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Total Group Expenses Box */}
-                  <div className="mb-4 py-2.5 px-3.5 rounded-xl bg-[var(--bg)] border border-[var(--border-subtle)] flex items-center justify-between gap-2">
-                    <span className="text-xs text-[var(--ink-secondary)] font-medium">
-                      {translate(language, 'totalExpenses')}
+                  {/* Total Group Spend Row (Hairline separation instead of nested box) */}
+                  <div className="mt-4 pt-3.5 border-t border-[var(--border-subtle)] flex items-baseline justify-between gap-2">
+                    <span className="text-xs text-[var(--ink-secondary)]">
+                      {translate(language, 'totalExpenses')} ({groupExpenses.length})
                     </span>
                     <span className="text-sm font-bold text-[var(--ink)] tnum amount-val">
                       {formatMoney(totalGroupBaseAmount, group.baseCurrency, language)}
@@ -405,29 +428,34 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   </div>
                 </div>
 
-                {/* Footer: Overlapping Member avatars & Personal balance */}
-                <div className="pt-3 border-t border-[var(--border-subtle)] flex items-center justify-between">
-                  <div className="flex items-center -space-x-1.5">
-                    {cardMembers.slice(0, 4).map(m => (
-                      <MemberAvatar
-                        key={m.id}
-                        name={m.name}
-                        avatar={m.avatar}
-                        color={m.color}
-                        size="sm"
-                        className="w-7 h-7 text-xs ring-2 ring-[var(--accent-border)] group-hover:scale-105 transition-transform"
-                      />
-                    ))}
-                    {cardMembers.length > 4 && (
-                      <div className="w-7 h-7 rounded-full bg-[var(--surface-subtle)] text-[10px] font-bold text-[var(--ink)] flex items-center justify-center ring-2 ring-[var(--surface)]">
-                        +{cardMembers.length - 4}
-                      </div>
-                    )}
+                {/* Footer: Overlapping Member avatars & Personal net position */}
+                <div className="mt-3.5 pt-3 border-t border-[var(--border-subtle)] flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="flex items-center -space-x-1.5 shrink-0">
+                      {cardMembers.slice(0, 4).map(m => (
+                        <MemberAvatar
+                          key={m.id}
+                          name={m.name}
+                          avatar={m.avatar}
+                          color={m.color}
+                          size="sm"
+                          className="w-6 h-6 text-[11px] ring-2 ring-[var(--surface)]"
+                        />
+                      ))}
+                      {cardMembers.length > 4 && (
+                        <div className="w-6 h-6 rounded-full bg-[var(--surface-subtle)] text-[10px] font-bold text-[var(--ink)] flex items-center justify-center ring-2 ring-[var(--surface)]">
+                          +{cardMembers.length - 4}
+                        </div>
+                      )}
+                    </div>
+                    <span className="text-[11px] text-[var(--ink-muted)] truncate">
+                      {cardMembers.length} {cardMembers.length === 1 ? 'member' : 'members'}
+                    </span>
                   </div>
 
-                  <div className="text-right">
+                  <div className="text-right shrink-0">
                     <span
-                      className={`text-xs sm:text-sm font-bold tnum amount-val ${
+                      className={`text-xs sm:text-[13px] font-bold tnum amount-val ${
                         userNet > 0.005
                           ? 'text-[#087F5B] dark:text-[#63E6BE]'
                           : userNet < -0.005

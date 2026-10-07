@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import {
   Sparkles,
   ArrowRight,
+  ArrowLeft,
   User,
   Upload,
   Trash2,
@@ -16,6 +17,7 @@ import {
   Eye,
   EyeOff,
   CheckCircle2,
+  Zap,
 } from 'lucide-react';
 import { Member, SupportedLanguage } from '../types';
 import { MemberAvatar } from './MemberAvatar';
@@ -32,6 +34,8 @@ interface UserOnboardingModalProps {
   initialAuthTab?: 'register' | 'login';
   hasPassword?: boolean;
   isEditing?: boolean;
+  isTemporaryUser?: boolean;
+  onStartTemporaryUse?: () => void;
   onSaveUser: (
     name: string,
     username: string,
@@ -71,6 +75,8 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   initialAuthTab = 'register',
   hasPassword = false,
   isEditing = false,
+  isTemporaryUser = false,
+  onStartTemporaryUse,
   onSaveUser,
   onLoginAccount,
   onCompletePinPasswordSetup,
@@ -80,11 +86,18 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   onClose,
   language,
 }) => {
+  const [onboardingStep, setOnboardingStep] = useState<'choose_mode' | 'auth'>(() =>
+    isEditing || initialAuthTab === 'login' ? 'auth' : 'choose_mode'
+  );
   const [authTab, setAuthTab] = useState<'register' | 'login'>(initialAuthTab);
-  const [name, setName] = useState(initialName);
-  const [username, setUsername] = useState(initialUsername);
-  const [hasEditedUsernameManually, setHasEditedUsernameManually] = useState(Boolean(initialUsername));
-  const [avatar, setAvatar] = useState(initialAvatar);
+  const [name, setName] = useState(
+    isTemporaryUser && (initialName === 'Guest' || initialName === 'You') ? '' : initialName
+  );
+  const [username, setUsername] = useState(isTemporaryUser ? '' : initialUsername);
+  const [hasEditedUsernameManually, setHasEditedUsernameManually] = useState(
+    Boolean(!isTemporaryUser && initialUsername)
+  );
+  const [avatar, setAvatar] = useState(initialAvatar === '👤' ? '👨‍💻' : initialAvatar);
   const [color] = useState(initialColor);
 
   // Registration / Profile Update password state
@@ -118,13 +131,19 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
   React.useEffect(() => {
     if (isOpen && !wasOpenRef.current) {
       wasOpenRef.current = true;
+      setOnboardingStep(isEditing || initialAuthTab === 'login' ? 'auth' : 'choose_mode');
       setAuthTab(initialAuthTab);
-      setName(initialName);
-      setUsername(initialUsername);
-      setHasEditedUsernameManually(Boolean(initialUsername));
-      setAvatar(initialAvatar);
+      const effectiveInitialName =
+        isTemporaryUser && (initialName === 'Guest' || initialName === 'You')
+          ? ''
+          : initialName;
+      const effectiveInitialUsername = isTemporaryUser ? '' : initialUsername;
+      setName(effectiveInitialName);
+      setUsername(effectiveInitialUsername);
+      setHasEditedUsernameManually(Boolean(effectiveInitialUsername));
+      setAvatar(initialAvatar === '👤' ? '👨‍💻' : initialAvatar);
       setPassword('');
-      setLoginUsername(initialUsername || '');
+      setLoginUsername(effectiveInitialUsername || '');
       setLoginPasswordOrPin('');
       setPinVerifiedStep(null);
       setNewAccountPassword('');
@@ -138,11 +157,21 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
     } else if (!isOpen) {
       wasOpenRef.current = false;
     }
-  }, [isOpen, initialName, initialUsername, initialAvatar, initialColor, initialAuthTab]);
+  }, [
+    isOpen,
+    initialName,
+    initialUsername,
+    initialAvatar,
+    initialColor,
+    initialAuthTab,
+    isEditing,
+    isTemporaryUser,
+  ]);
 
   // If user just logged out while modal opens or transitions to onboarding, switch immediately to login tab with their @username pre-filled
   React.useEffect(() => {
     if (isOpen && !isEditing && initialAuthTab === 'login') {
+      setOnboardingStep('auth');
       setAuthTab('login');
       if (initialUsername) {
         setLoginUsername(initialUsername);
@@ -348,6 +377,14 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                       ? isFrench
                         ? 'Créer votre mot de passe'
                         : 'Create Account Password'
+                      : onboardingStep === 'choose_mode' && !isEditing
+                      ? isFrench
+                        ? 'Comment voulez-vous utiliser Splitzy ?'
+                        : 'How do you want to use Splitzy?'
+                      : isEditing && isTemporaryUser
+                      ? isFrench
+                        ? 'Passer à une utilisation à long terme'
+                        : 'Switch to Long-Term Use'
                       : isEditing
                       ? isFrench
                         ? 'Profil Utilisateur'
@@ -357,8 +394,8 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                         ? 'Connexion à Splitze'
                         : 'Log In to Splitze'
                       : isFrench
-                      ? 'Bienvenue sur Splitze'
-                      : 'Welcome to Splitze'}
+                      ? 'Créer votre compte Splitze'
+                      : 'Create Your Splitzy Account'}
                   </span>
                 </h2>
                 <p className="text-xs font-medium text-[#8B9AAF] mt-0.5 leading-snug">
@@ -366,6 +403,14 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                     ? isFrench
                       ? `PIN vérifié pour @${pinVerifiedStep.username}`
                       : `PIN verified for @${pinVerifiedStep.username} — set a password for login`
+                    : onboardingStep === 'choose_mode' && !isEditing
+                    ? isFrench
+                      ? 'Choisissez comment démarrer. Vous pourrez créer un compte plus tard.'
+                      : 'Choose how to get started. You can create an account later anytime.'
+                    : isEditing && isTemporaryUser
+                    ? isFrench
+                      ? 'Créez un compte pour conserver vos groupes et dépenses'
+                      : 'Create an account & keep all your existing groups and expenses'
                     : isEditing
                     ? isFrench
                       ? 'Modifier votre profil et mot de passe'
@@ -378,10 +423,25 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                 </p>
               </div>
             </div>
+
+            {!isEditing && !pinVerifiedStep && onboardingStep === 'auth' && (
+              <button
+                id="onboarding-back-to-choice-btn"
+                type="button"
+                onClick={() => {
+                  setOnboardingStep('choose_mode');
+                  setError(null);
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-semibold text-[#63E6BE] transition-colors cursor-pointer shrink-0"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>{isFrench ? 'Options' : 'Back'}</span>
+              </button>
+            )}
           </div>
 
-          {/* Mode Tabs when not logged in */}
-          {!isEditing && !pinVerifiedStep && (
+          {/* Mode Tabs when in auth step (either new user or temporary user upgrading to Long-Term Use) */}
+          {onboardingStep === 'auth' && (!isEditing || isTemporaryUser) && !pinVerifiedStep && (
             <div className="grid grid-cols-2 gap-1.5 p-1 mt-3.5 bg-[#0B1420]/80 rounded-xl border border-white/10">
               <button
                 id="onboarding-tab-register-btn"
@@ -422,8 +482,96 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
           )}
         </div>
 
-        {/* STEP 2 OF PIN LOGIN: Mandatory Password Creation for Already Registered Users */}
-        {pinVerifiedStep ? (
+        {/* STEP 1: HOW DO YOU WANT TO USE SPLITZY? (Temporary Use vs Long-Term Use) */}
+        {onboardingStep === 'choose_mode' && !isEditing && !pinVerifiedStep ? (
+          <div className="p-4 sm:p-5 space-y-3.5">
+            {/* Option 1: Temporary Use */}
+            <button
+              id="onboarding-choose-temporary-btn"
+              type="button"
+              onClick={() => {
+                if (onStartTemporaryUse) {
+                  onStartTemporaryUse();
+                }
+              }}
+              className="group w-full text-left p-4 rounded-xl border border-[var(--border)] bg-[var(--surface-subtle)] hover:bg-[var(--surface-hover)] hover:border-[var(--accent)] transition-all cursor-pointer flex items-start justify-between gap-3"
+            >
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-xl bg-[#63E6BE]/20 text-[#101D2D] dark:text-[#63E6BE] flex items-center justify-center shrink-0 mt-0.5">
+                  <Zap className="w-4 h-4" />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-sm font-bold text-[var(--ink)] flex items-center gap-2">
+                    <span>{isFrench ? 'Utilisation temporaire' : 'Temporary Use'}</span>
+                    <span aria-hidden="true" className="text-[var(--ink-muted)] font-normal">·</span>
+                    <span className="text-xs font-medium text-[var(--ink-secondary)]">
+                      {isFrench ? 'Sans compte' : 'No Account'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                    {isFrench
+                      ? 'Utilisez l’application immédiatement sans créer de compte. Créez des groupes, ajoutez des dépenses et partagez les factures normalement.'
+                      : 'Use the app without creating an account. Enter immediately to create groups, add expenses, invite friends, and settle bills.'}
+                  </p>
+                </div>
+              </div>
+              <ArrowRight className="w-4 h-4 text-[var(--ink-muted)] group-hover:text-[var(--ink)] group-hover:translate-x-0.5 transition-all shrink-0 mt-1" />
+            </button>
+
+            {/* Option 2: Long-Term Use */}
+            <button
+              id="onboarding-choose-long-term-btn"
+              type="button"
+              onClick={() => {
+                setOnboardingStep('auth');
+                setAuthTab('register');
+                setError(null);
+              }}
+              className="group w-full text-left p-4 rounded-xl border border-[var(--border)] bg-[var(--surface-subtle)] hover:bg-[var(--surface-hover)] hover:border-[var(--accent)] transition-all cursor-pointer flex items-start justify-between gap-3"
+            >
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-xl bg-[#101D2D] text-[#63E6BE] flex items-center justify-center shrink-0 mt-0.5">
+                  <UserPlus className="w-4 h-4" />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-sm font-bold text-[var(--ink)] flex items-center gap-2">
+                    <span>{isFrench ? 'Utilisation à long terme' : 'Long-Term Use'}</span>
+                    <span aria-hidden="true" className="text-[var(--ink-muted)] font-normal">·</span>
+                    <span className="text-xs font-medium text-[var(--brand-text)]">
+                      {isFrench ? 'Créer un compte' : 'Personal Profile'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                    {isFrench
+                      ? 'Créez un compte avec votre @username personnel et un mot de passe pour conserver votre profil et synchroniser vos groupes.'
+                      : 'Create an account to keep using the app with a personal profile, unique @username, and password protection.'}
+                  </p>
+                </div>
+              </div>
+              <ArrowRight className="w-4 h-4 text-[var(--ink-muted)] group-hover:text-[var(--ink)] group-hover:translate-x-0.5 transition-all shrink-0 mt-1" />
+            </button>
+
+            {/* Existing Account Login Link */}
+            <div className="pt-2 border-t border-[var(--border-subtle)] flex items-center justify-between text-xs text-[var(--text-secondary)]">
+              <span>
+                {isFrench ? 'Vous avez déjà un compte ?' : 'Already have an account?'}
+              </span>
+              <button
+                id="onboarding-choice-login-btn"
+                type="button"
+                onClick={() => {
+                  setOnboardingStep('auth');
+                  setAuthTab('login');
+                  setError(null);
+                }}
+                className="inline-flex items-center gap-1.5 font-semibold text-[var(--ink)] hover:underline cursor-pointer"
+              >
+                <LogIn className="w-3.5 h-3.5 text-[var(--accent)]" />
+                <span>{isFrench ? 'Se connecter' : 'Log In'}</span>
+              </button>
+            </div>
+          </div>
+        ) : pinVerifiedStep ? (
           <form onSubmit={handleCompletePinPasswordSetup} className="p-4 sm:p-5 space-y-4">
             <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/70 space-y-1">
               <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-900 dark:text-emerald-200">
@@ -529,9 +677,16 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
               </button>
             </div>
           </form>
-        ) : authTab === 'login' && !isEditing ? (
+        ) : authTab === 'login' && (!isEditing || isTemporaryUser) ? (
           /* ACCOUNT LOGIN TAB */
           <form onSubmit={handleLoginSubmit} className="p-4 sm:p-5 space-y-4">
+            {isTemporaryUser && (
+              <div className="p-3 rounded-xl bg-[var(--surface-subtle)] border border-[var(--border)] text-xs text-[var(--text-secondary)] leading-relaxed">
+                {isFrench
+                  ? 'Vos groupes et dépenses temporaires actuels seront automatiquement associés à votre compte après connexion.'
+                  : 'Your current temporary groups and expenses will be automatically preserved and associated with your account when you log in.'}
+              </div>
+            )}
             <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
               {isFrench
                 ? 'Entrez votre @username et votre mot de passe. Si vous étiez déjà inscrit avant l’ajout des mots de passe, utilisez votre code PIN à 4 chiffres pour cette connexion.'
@@ -902,7 +1057,7 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                 : 'Others can only add you to a group using your verified unique @username or via group invite.'}
             </p>
 
-            {isEditing && (onLogoutAccount || onDeleteAccount) && (
+            {isEditing && !isTemporaryUser && (onLogoutAccount || onDeleteAccount) && (
               <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2.5">
                 {!showDeleteConfirm && (
                   <div className="flex items-center justify-between gap-3">
@@ -1004,10 +1159,14 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                 className="ui-btn ui-btn-primary w-full sm:w-auto px-4 py-2 text-xs"
               >
                 <span>
-                  {isEditing
+                  {isEditing && !isTemporaryUser
                     ? isFrench
                       ? 'Enregistrer'
                       : 'Save Profile'
+                    : isTemporaryUser
+                    ? isFrench
+                      ? 'Créer mon compte et conserver mes données'
+                      : 'Create Account & Keep Data'
                     : isFrench
                     ? 'Continuer vers Splitze'
                     : 'Continue to Splitze'}

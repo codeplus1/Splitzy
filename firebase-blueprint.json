@@ -2,7 +2,7 @@
   "entities": {
     "groups": {
       "title": "Group",
-      "description": "Expense sharing group containing participants and expenses",
+      "description": "Expense sharing group containing participants, expenses, and post-settlement retention metadata",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
@@ -16,6 +16,14 @@
           "items": { "type": "string" }
         },
         "inviteCode": { "type": "string" },
+        "settled": { "type": "boolean" },
+        "settledAt": { "type": "number" },
+        "retentionOption": {
+          "type": "string",
+          "enum": ["3_days", "15_days", "1_month"]
+        },
+        "scheduledDeleteAt": { "type": "number" },
+        "keepGroup": { "type": "boolean" },
         "createdAt": { "type": "string" }
       },
       "required": ["id", "name", "baseCurrency"]
@@ -89,6 +97,7 @@
         "notes": { "type": "string" },
         "receiptUrl": { "type": "string" },
         "receiptName": { "type": "string" },
+        "receiptStoragePath": { "type": "string" },
         "createdAt": { "type": "string" }
       },
       "required": ["id", "groupId", "title", "baseAmount", "paidBy"]

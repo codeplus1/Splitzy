@@ -530,13 +530,15 @@ export function subscribeToUserCloudSync(
     unsubSubqueries = [];
   };
 
+  const isDeviceOnline = () =>
+    typeof navigator === 'undefined' || navigator.onLine !== false;
+
   const handleError = (error: unknown, path: string) => {
-    console.warn(`Firestore sync listener error on [${path}]:`, error);
-    const code = (error as any)?.code;
-    if (code === 'unavailable') {
+    console.warn(`Firestore sync listener notice on [${path}]:`, error);
+    if (!isDeviceOnline()) {
       onStatusChange?.('offline');
     } else {
-      onStatusChange?.('error');
+      onStatusChange?.('connected');
     }
   };
 
@@ -579,7 +581,7 @@ export function subscribeToUserCloudSync(
     const emitAggregatedData = () => {
       if (isCancelled) return;
       if (loadedExp && loadedShares && loadedMemb && loadedGm && loadedSett) {
-        onStatusChange?.('connected');
+        onStatusChange?.(isDeviceOnline() ? 'connected' : 'offline');
         hasEmittedInitial = true;
 
         onData({
@@ -631,7 +633,12 @@ export function subscribeToUserCloudSync(
 
         emitAggregatedData();
       },
-      err => handleError(err, EXPENSES_COL)
+      err => {
+        loadedExp = true;
+        loadedShares = true;
+        handleError(err, EXPENSES_COL);
+        emitAggregatedData();
+      }
     );
     unsubSubqueries.push(unsubExp);
 
@@ -687,7 +694,12 @@ export function subscribeToUserCloudSync(
         }
         emitAggregatedData();
       },
-      err => handleError(err, GROUP_MEMBERS_COL)
+      err => {
+        loadedGm = true;
+        loadedMemb = true;
+        handleError(err, GROUP_MEMBERS_COL);
+        emitAggregatedData();
+      }
     );
     unsubSubqueries.push(unsubGm);
 
@@ -703,7 +715,11 @@ export function subscribeToUserCloudSync(
         loadedSett = true;
         emitAggregatedData();
       },
-      err => handleError(err, SETTLEMENTS_COL)
+      err => {
+        loadedSett = true;
+        handleError(err, SETTLEMENTS_COL);
+        emitAggregatedData();
+      }
     );
     unsubSubqueries.push(unsubSett);
 
@@ -731,8 +747,12 @@ export function subscribeToUserCloudSync(
   ensureAuthUser().then(authUser => {
     if (isCancelled) return;
     const effectiveUserId = authUser?.uid || auth.currentUser?.uid || userId;
+    if (!effectiveUserId) {
+      onStatusChange?.(isDeviceOnline() ? 'connected' : 'offline');
+      return;
+    }
     if (!auth.currentUser) {
-      onStatusChange?.('offline');
+      onStatusChange?.(isDeviceOnline() ? 'connected' : 'offline');
       return;
     }
 
@@ -750,7 +770,7 @@ export function subscribeToUserCloudSync(
         // If user has no groups on cloud, emit empty state immediately
         if (currentGroups.length === 0) {
           cleanupSubqueries();
-          onStatusChange?.('connected');
+          onStatusChange?.(isDeviceOnline() ? 'connected' : 'offline');
           hasEmittedInitial = true;
           onData({
             groups: [],
@@ -2247,42 +2267,34 @@ export async function cloudUploadFullState(
     const ownMemberId = state.userProfile?.id || state.currentUserId;
 
     if (state.userProfile && state.userProfile.id && realAuthUid) {
-      const cleanProfileUsername = normalizeUsername(
-        state.userProfile.username || generateDefaultUsername(state.userProfile.name, realAuthUid)
-      );
-      const storedCred = cleanProfileUsername ? getLocalAccountCredential(cleanProfileUsername) : null;
-      const resolvedPasswordHash = state.userProfile.passwordHash || storedCred?.passwordHash;
-      const resolvedPinHash =
-        state.userProfile.pinHash || storedCred?.pinHash || getStoredAppLockPinHash() || undefined;
-      pendingWrites.push({
-        col: MEMBERS_COL,
-        id: state.userProfile.id,
-        data: sanitizeForFirestore({
-          ...state.userProfile,
-          username: cleanProfileUsername,
-          uid: realAuthUid,
-          groupId: state.userProfile.groupId || primaryGroupId,
-          memberUserIds: Array.from(allCoMemberUids),
-          ...(resolvedPasswordHash && isValidVerifierHash(resolvedPasswordHash)
-            ? { passwordHash: resolvedPasswordHash }
-            : {}),
-          ...(resolvedPinHash && isValidVerifierHash(resolvedPinHash)
-            ? { pinHash: resolvedPinHash }
-            : {}),
-        }),
-      });
-      if (cleanProfileUsername.length >= 2) {
+      if (state.userProfile.isTemporary) {
         pendingWrites.push({
-          col: USER_DIRECTORY_COL,
-          id: cleanProfileUsername,
+          col: MEMBERS_COL,
+          id: state.userProfile.id,
           data: sanitizeForFirestore({
-            username: cleanProfileUsername,
-            memberId: state.userProfile.id,
+            ...state.userProfile,
             uid: realAuthUid,
-            name: state.userProfile.name,
-            avatar: state.userProfile.avatar,
-            color: state.userProfile.color || '#101D2D',
-            updatedAt: new Date().toISOString(),
+            groupId: state.userProfile.groupId || primaryGroupId,
+            memberUserIds: Array.from(allCoMemberUids),
+          }),
+        });
+      } else {
+        const cleanProfileUsername = normalizeUsername(
+          state.userProfile.username || generateDefaultUsername(state.userProfile.name, realAuthUid)
+        );
+        const storedCred = cleanProfileUsername ? getLocalAccountCredential(cleanProfileUsername) : null;
+        const resolvedPasswordHash = state.userProfile.passwordHash || storedCred?.passwordHash;
+        const resolvedPinHash =
+          state.userProfile.pinHash || storedCred?.pinHash || getStoredAppLockPinHash() || undefined;
+        pendingWrites.push({
+          col: MEMBERS_COL,
+          id: state.userProfile.id,
+          data: sanitizeForFirestore({
+            ...state.userProfile,
+            username: cleanProfileUsername,
+            uid: realAuthUid,
+            groupId: state.userProfile.groupId || primaryGroupId,
+            memberUserIds: Array.from(allCoMemberUids),
             ...(resolvedPasswordHash && isValidVerifierHash(resolvedPasswordHash)
               ? { passwordHash: resolvedPasswordHash }
               : {}),
@@ -2291,6 +2303,27 @@ export async function cloudUploadFullState(
               : {}),
           }),
         });
+        if (cleanProfileUsername.length >= 2) {
+          pendingWrites.push({
+            col: USER_DIRECTORY_COL,
+            id: cleanProfileUsername,
+            data: sanitizeForFirestore({
+              username: cleanProfileUsername,
+              memberId: state.userProfile.id,
+              uid: realAuthUid,
+              name: state.userProfile.name,
+              avatar: state.userProfile.avatar,
+              color: state.userProfile.color || '#101D2D',
+              updatedAt: new Date().toISOString(),
+              ...(resolvedPasswordHash && isValidVerifierHash(resolvedPasswordHash)
+                ? { passwordHash: resolvedPasswordHash }
+                : {}),
+              ...(resolvedPinHash && isValidVerifierHash(resolvedPinHash)
+                ? { pinHash: resolvedPinHash }
+                : {}),
+            }),
+          });
+        }
       }
     }
 

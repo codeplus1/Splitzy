@@ -90,7 +90,9 @@ export default function App() {
   const [activeGroupId, setActiveGroupId] = useState<string | null>(
     () => appState.activeGroupId || appState.groups[0]?.id || null
   );
-  const [syncStatus, setSyncStatus] = useState<SyncStatus>('syncing');
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(() =>
+    typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'connected'
+  );
 
   // Modals state
   const [isAddExpenseOpen, setIsAddExpenseOpen] = useState(false);
@@ -219,13 +221,28 @@ export default function App() {
     return () => unsubAuth();
   }, []);
 
-  // Ensure the current user's profile has a unique @username registered in Firestore userDirectory
+  // Ensure the current user's profile has a unique @username registered in Firestore userDirectory (unless in Temporary Use mode)
   useEffect(() => {
     if (!currentUser?.uid) return;
     const myProfile =
       appState.userProfile ||
       appState.members.find(m => m.id === appState.currentUserId);
     if (!myProfile) return;
+
+    if (myProfile.isTemporary) {
+      if (myProfile.uid !== currentUser.uid) {
+        const updatedTemp: Member = {
+          ...myProfile,
+          uid: currentUser.uid,
+        };
+        setAppState(prev => ({
+          ...prev,
+          userProfile: updatedTemp,
+          members: prev.members.map(m => (m.id === updatedTemp.id ? updatedTemp : m)),
+        }));
+      }
+      return;
+    }
 
     const assignedUsername =
       myProfile.username || generateDefaultUsername(myProfile.name, currentUser.uid);
@@ -245,7 +262,7 @@ export default function App() {
     } else if (myProfile.uid === currentUser.uid) {
       cloudRegisterOrUpdateUserProfile(myProfile);
     }
-  }, [currentUser?.uid, appState.userProfile?.id, appState.currentUserId]);
+  }, [currentUser?.uid, appState.userProfile?.id, appState.userProfile?.isTemporary, appState.currentUserId]);
 
   // 2. Real-time synchronization strictly SCOPED to the authenticated user's groups
   const isUserLoggedIn = Boolean(appState.userProfile?.id || appState.currentUserId);
@@ -281,10 +298,15 @@ export default function App() {
 
         if (cloudData.isInitialLoad && isRealFirebaseUid) {
           const local = loadAppState();
-          const pendingGroupSet = new Set(local.pendingGroupIds || []);
-          const pendingLocalGroups = local.groups.filter(g => pendingGroupSet.has(g.id));
-          if (pendingLocalGroups.length > 0) {
-            const preparedGroups = pendingLocalGroups.map(g => {
+          const hasPendingOrUnsynced =
+            (local.pendingGroupIds?.length || 0) > 0 ||
+            (local.pendingExpenseIds?.length || 0) > 0 ||
+            (local.pendingSettlementIds?.length || 0) > 0 ||
+            local.groups.length > cloudData.groups.length ||
+            local.expenses.length > cloudData.expenses.length;
+
+          if (hasPendingOrUnsynced) {
+            const preparedGroups = local.groups.map(g => {
               const isLocalCreator =
                 !g.createdBy ||
                 g.createdBy === 'anonymous' ||
@@ -303,7 +325,17 @@ export default function App() {
                 inviteCode: g.inviteCode || generateInviteCode(),
               };
             });
-            cloudUploadFullState({ ...local, groups: preparedGroups }, currentUser);
+            cloudUploadFullState({ ...local, groups: preparedGroups }, currentUser).then(res => {
+              if (res.success) {
+                setSyncStatus('connected');
+                setAppState(prev => ({
+                  ...prev,
+                  pendingGroupIds: [],
+                  pendingExpenseIds: [],
+                  pendingSettlementIds: [],
+                }));
+              }
+            });
           }
         }
       },
@@ -316,6 +348,42 @@ export default function App() {
       unsubscribe();
     };
   }, [currentUser, isUserLoggedIn]);
+
+  // Automatic background cloud sync whenever there are pending changes and the device is online
+  useEffect(() => {
+    if (!currentUser || !isUserLoggedIn) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+
+    const pendingCount =
+      (appState.pendingGroupIds?.length || 0) +
+      (appState.pendingExpenseIds?.length || 0) +
+      (appState.pendingSettlementIds?.length || 0);
+
+    if (pendingCount === 0) return;
+
+    const timer = setTimeout(() => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+      cloudUploadFullState(appState, currentUser).then(res => {
+        if (res.success) {
+          setSyncStatus('connected');
+          setAppState(prev => ({
+            ...prev,
+            pendingGroupIds: [],
+            pendingExpenseIds: [],
+            pendingSettlementIds: [],
+          }));
+        }
+      });
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [
+    currentUser,
+    isUserLoggedIn,
+    appState.pendingGroupIds?.length,
+    appState.pendingExpenseIds?.length,
+    appState.pendingSettlementIds?.length,
+  ]);
 
   // 3. Handle incoming join link (?join=CODE) and client-side group route (/group/:id or ?group=id)
   const pendingJoinCodeRef = useRef<string | null>(null);
@@ -587,7 +655,136 @@ export default function App() {
     showToast('Expense deleted', 'info');
   };
 
-  // Save / Update Primary User Profile (First-time onboarding or profile edit)
+  // Start Temporary Use immediately without creating an account
+  const handleStartTemporaryUse = () => {
+    const cleanUidSuffix = (currentUser?.uid || Date.now().toString(36))
+      .replace(/[^a-zA-Z0-9_-]/g, '')
+      .slice(-12);
+    const tempMemberId = `m_temp_${cleanUidSuffix || Date.now()}`;
+    const tempMember: Member = {
+      id: tempMemberId,
+      uid: currentUser?.uid,
+      name: 'Guest',
+      avatar: '👤',
+      color: '#101D2D',
+      isTemporary: true,
+      createdAt: new Date().toISOString(),
+    };
+
+    try {
+      localStorage.removeItem('splitze_last_logged_out_username');
+    } catch {
+      // Ignore
+    }
+
+    setAppState(prev => ({
+      ...prev,
+      userProfile: tempMember,
+      currentUserId: tempMemberId,
+      members: prev.members.some(m => m.id === tempMemberId)
+        ? prev.members.map(m => (m.id === tempMemberId ? tempMember : m))
+        : [tempMember, ...prev.members],
+    }));
+    setIsEditProfileOpen(false);
+    showToast('Started in Temporary Use mode. You can create an account anytime in Settings!', 'info');
+  };
+
+  // Helper to migrate any temporary member data (groups, groupMembers, expenses, shares, settlements) to a permanent Member profile
+  const migrateStateToPermanentMember = (
+    prev: AppState,
+    targetMember: Member,
+    oldTempMemberId?: string
+  ): AppState => {
+    const permanentMember: Member = {
+      ...targetMember,
+      isTemporary: false,
+    };
+    const finalMemberId = permanentMember.id;
+    const shouldMigrateId = Boolean(oldTempMemberId && oldTempMemberId !== finalMemberId);
+
+    // 1. Update members array (replace old temporary member or existing member entry)
+    const filteredMembers = prev.members.filter(
+      m => m.id !== finalMemberId && (!shouldMigrateId || m.id !== oldTempMemberId)
+    );
+    const updatedMembers = [permanentMember, ...filteredMembers];
+
+    // 2. Migrate groupMembers references
+    const updatedGroupMembers = prev.groupMembers.map(gm => {
+      if (gm.memberId === finalMemberId || (shouldMigrateId && gm.memberId === oldTempMemberId)) {
+        return {
+          ...gm,
+          memberId: finalMemberId,
+          memberName: permanentMember.name,
+          memberUsername: permanentMember.username,
+          memberAvatar: permanentMember.avatar,
+          memberColor: permanentMember.color,
+          memberUid: permanentMember.uid,
+        };
+      }
+      return gm;
+    });
+
+    // Ensure every group has a GroupMember entry for finalMemberId
+    for (const g of prev.groups) {
+      const hasGm = updatedGroupMembers.some(
+        gm => gm.groupId === g.id && gm.memberId === finalMemberId
+      );
+      if (!hasGm) {
+        const newGm: GroupMember = {
+          id: `gm_${g.id}_${finalMemberId}`,
+          groupId: g.id,
+          memberId: finalMemberId,
+          memberName: permanentMember.name,
+          memberUsername: permanentMember.username,
+          memberAvatar: permanentMember.avatar,
+          memberColor: permanentMember.color,
+          memberUid: permanentMember.uid,
+        };
+        updatedGroupMembers.push(newGm);
+        cloudAddMember(
+          { ...permanentMember, groupId: g.id },
+          newGm,
+          g.createdBy === currentUser?.uid
+        );
+      }
+    }
+
+    // 3. Migrate expenses paidBy if temporary member ID changed
+    const updatedExpenses = shouldMigrateId
+      ? prev.expenses.map(exp =>
+          exp.paidBy === oldTempMemberId ? { ...exp, paidBy: finalMemberId } : exp
+        )
+      : prev.expenses;
+
+    // 4. Migrate expenseShares memberId if temporary member ID changed
+    const updatedExpenseShares = shouldMigrateId
+      ? prev.expenseShares.map(sh =>
+          sh.memberId === oldTempMemberId ? { ...sh, memberId: finalMemberId } : sh
+        )
+      : prev.expenseShares;
+
+    // 5. Migrate settlements fromMemberId / toMemberId if temporary member ID changed
+    const updatedSettlements = shouldMigrateId
+      ? prev.settlements.map(st => ({
+          ...st,
+          fromMemberId: st.fromMemberId === oldTempMemberId ? finalMemberId : st.fromMemberId,
+          toMemberId: st.toMemberId === oldTempMemberId ? finalMemberId : st.toMemberId,
+        }))
+      : prev.settlements;
+
+    return {
+      ...prev,
+      userProfile: permanentMember,
+      currentUserId: finalMemberId,
+      members: updatedMembers,
+      groupMembers: updatedGroupMembers,
+      expenses: updatedExpenses,
+      expenseShares: updatedExpenseShares,
+      settlements: updatedSettlements,
+    };
+  };
+
+  // Save / Update Primary User Profile (First-time onboarding, Temporary-to-Long-Term upgrade, or profile edit)
   const handleSaveUserProfile = async (
     name: string,
     username: string,
@@ -613,14 +810,15 @@ export default function App() {
       color,
       passwordHash: existingMember?.passwordHash,
       pinHash: existingMember?.pinHash,
+      isTemporary: false,
       createdAt: existingMember?.createdAt || new Date().toISOString(),
     };
 
     // Register & verify unique @username + password in Firestore userDirectory
-    const isNewRegistration = !existingMember?.username;
+    const isNewRegistration = !existingMember?.username || Boolean(existingMember?.isTemporary);
     const regResult = await cloudRegisterOrUpdateUserProfile(
       candidateMember,
-      existingMember?.username,
+      existingMember?.isTemporary ? undefined : existingMember?.username,
       password,
       isNewRegistration
     );
@@ -632,70 +830,37 @@ export default function App() {
       };
     }
 
-    const updatedMember = regResult.member || candidateMember;
+    const updatedMember: Member = {
+      ...(regResult.member || candidateMember),
+      isTemporary: false,
+    };
+
+    try {
+      localStorage.removeItem('splitze_last_logged_out_username');
+    } catch {
+      // Ignore
+    }
 
     setAppState(prev => {
-      const existsInMembers = prev.members.some(m => m.id === memberId);
-      const updatedMembers = existsInMembers
-        ? prev.members.map(m => (m.id === memberId ? updatedMember : m))
-        : [updatedMember, ...prev.members];
-
-      // Ensure all existing groups have an up-to-date GroupMember record for this user
-      const updatedGroupMembers = prev.groupMembers.map(gm =>
-        gm.memberId === memberId
-          ? {
-              ...gm,
-              memberName: updatedMember.name,
-              memberUsername: updatedMember.username,
-              memberAvatar: updatedMember.avatar,
-              memberColor: updatedMember.color,
-              memberUid: updatedMember.uid,
-            }
-          : gm
+      const nextState = migrateStateToPermanentMember(
+        prev,
+        updatedMember,
+        existingMember?.id
       );
 
-      for (const g of prev.groups) {
-        const hasGm = updatedGroupMembers.some(
-          gm => gm.groupId === g.id && gm.memberId === memberId
-        );
-        if (!hasGm) {
-          const newGm: GroupMember = {
-            id: `gm_${g.id}_${memberId}`,
-            groupId: g.id,
-            memberId,
-            memberName: updatedMember.name,
-            memberUsername: updatedMember.username,
-            memberAvatar: updatedMember.avatar,
-            memberColor: updatedMember.color,
-            memberUid: updatedMember.uid,
-          };
-          updatedGroupMembers.push(newGm);
-          cloudAddMember(
-            { ...updatedMember, groupId: g.id },
-            newGm,
-            g.createdBy === currentUser?.uid
-          );
-        }
-      }
-
-      const nextState: AppState = {
-        ...prev,
-        userProfile: updatedMember,
-        currentUserId: memberId,
-        members: updatedMembers,
-        groupMembers: updatedGroupMembers,
-      };
-
-      // If user already has groups, sync updated member profile to cloud
-      if (nextState.groups.length > 0) {
-        cloudUploadFullState(nextState, currentUser);
-      }
+      // Sync updated member profile and any migrated temporary groups/expenses to cloud
+      cloudUploadFullState(nextState, currentUser);
 
       return nextState;
     });
 
     setIsEditProfileOpen(false);
-    showToast(`Profile saved as @${updatedMember.username}!`, 'success');
+    showToast(
+      existingMember?.isTemporary
+        ? `Account @${updatedMember.username} created! Your temporary groups and expenses are now saved to your account.`
+        : `Profile saved as @${updatedMember.username}!`,
+      'success'
+    );
     return { success: true };
   };
 
@@ -725,7 +890,10 @@ export default function App() {
     }
 
     if (res.member) {
-      const loggedInMember = res.member;
+      const loggedInMember: Member = { ...res.member, isTemporary: false };
+      const previousTempId = appState.userProfile?.isTemporary
+        ? appState.userProfile.id
+        : undefined;
       try {
         localStorage.removeItem('splitze_last_logged_out_username');
       } catch {
@@ -734,14 +902,17 @@ export default function App() {
       if (res.appUser) {
         setCurrentUser(res.appUser);
       }
-      setAppState(prev => ({
-        ...prev,
-        userProfile: loggedInMember,
-        currentUserId: loggedInMember.id,
-        members: prev.members.some(m => m.id === loggedInMember.id)
-          ? prev.members.map(m => (m.id === loggedInMember.id ? loggedInMember : m))
-          : [loggedInMember, ...prev.members],
-      }));
+      setAppState(prev => {
+        const nextState = migrateStateToPermanentMember(
+          prev,
+          loggedInMember,
+          previousTempId
+        );
+        if (previousTempId && nextState.groups.length > 0) {
+          cloudUploadFullState(nextState, res.appUser || currentUser);
+        }
+        return nextState;
+      });
       setIsEditProfileOpen(false);
       showToast(`Welcome back, @${loggedInMember.username}!`, 'success');
     }
@@ -766,7 +937,10 @@ export default function App() {
       return { success: false, error: res.error || 'Could not save password.' };
     }
 
-    const loggedInMember = res.member;
+    const loggedInMember: Member = { ...res.member, isTemporary: false };
+    const previousTempId = appState.userProfile?.isTemporary
+      ? appState.userProfile.id
+      : undefined;
     try {
       localStorage.removeItem('splitze_last_logged_out_username');
     } catch {
@@ -775,14 +949,17 @@ export default function App() {
     if (res.appUser) {
       setCurrentUser(res.appUser);
     }
-    setAppState(prev => ({
-      ...prev,
-      userProfile: loggedInMember,
-      currentUserId: loggedInMember.id,
-      members: prev.members.some(m => m.id === loggedInMember.id)
-        ? prev.members.map(m => (m.id === loggedInMember.id ? loggedInMember : m))
-        : [loggedInMember, ...prev.members],
-    }));
+    setAppState(prev => {
+      const nextState = migrateStateToPermanentMember(
+        prev,
+        loggedInMember,
+        previousTempId
+      );
+      if (previousTempId && nextState.groups.length > 0) {
+        cloudUploadFullState(nextState, res.appUser || currentUser);
+      }
+      return nextState;
+    });
     setIsEditProfileOpen(false);
     showToast(
       `Password created & logged in as @${loggedInMember.username}!`,
@@ -1396,7 +1573,11 @@ export default function App() {
         onOpenSettings={() => setIsSettingsOpen(true)}
         onHomeClick={() => setActiveGroupId(null)}
         onLockAppClick={isAppLockEnabled() ? () => setIsAppLocked(true) : undefined}
-        onLogoutClick={currentUserMember ? handleLogoutAccount : undefined}
+        onLogoutClick={
+          currentUserMember && !currentUserMember.isTemporary
+            ? handleLogoutAccount
+            : undefined
+        }
         currentMember={currentUserMember}
         onEditUserClick={() => setIsEditProfileOpen(true)}
         syncStatus={syncStatus}
@@ -1456,16 +1637,20 @@ export default function App() {
         isOpen={(needsOnboarding || isEditProfileOpen) && !isSecurityCenterOpen}
         initialName={currentUserMember?.name || ''}
         initialUsername={
-          currentUserMember?.username ||
-          (currentUserMember?.name
-            ? generateDefaultUsername(currentUserMember.name, currentUser?.uid)
-            : lastLoggedOutUsername)
+          currentUserMember?.isTemporary
+            ? ''
+            : currentUserMember?.username ||
+              (currentUserMember?.name
+                ? generateDefaultUsername(currentUserMember.name, currentUser?.uid)
+                : lastLoggedOutUsername)
         }
         initialAvatar={currentUserMember?.avatar || '👨‍💻'}
         initialColor={currentUserMember?.color || '#101D2D'}
         initialAuthTab={needsOnboarding ? onboardingAuthTab : 'register'}
         hasPassword={Boolean(currentUserMember?.passwordHash)}
         isEditing={!needsOnboarding && isEditProfileOpen}
+        isTemporaryUser={Boolean(currentUserMember?.isTemporary)}
+        onStartTemporaryUse={handleStartTemporaryUse}
         onSaveUser={handleSaveUserProfile}
         onLoginAccount={handleLoginAccount}
         onCompletePinPasswordSetup={handleCompletePinPasswordSetup}
