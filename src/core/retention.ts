@@ -51,6 +51,27 @@ export const DEFAULT_RETENTION_OPTION: RetentionPeriod = DEFAULT_RETENTION_PERIO
 export const RETENTION_OPTIONS: RetentionOption[] = RETENTION_PERIOD_OPTIONS;
 export type GroupRetentionOption = RetentionPeriod;
 
+export function getRetentionOptionConfig(
+  period: RetentionPeriod | string | undefined
+): RetentionOption {
+  const normalized =
+    period && (['3d', '15d', '1m', 'never'] as const).includes(period as RetentionPeriod)
+      ? (period as RetentionPeriod)
+      : DEFAULT_RETENTION_PERIOD;
+  return (
+    RETENTION_PERIOD_OPTIONS.find(o => o.value === normalized) ||
+    RETENTION_PERIOD_OPTIONS[1]
+  );
+}
+
+export function formatRetentionLabel(
+  period: RetentionPeriod | string | undefined,
+  language: 'en' | 'fr' = 'en'
+): string {
+  const opt = getRetentionOptionConfig(period);
+  return language === 'fr' ? opt.labelFr : opt.label;
+}
+
 export function getRetentionDurationMs(
   period: RetentionPeriod | string | number | undefined
 ): number {
