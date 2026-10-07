@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import QRCode from 'qrcode';
 import { X, Copy, Check, Share2, QrCode } from 'lucide-react';
 import { Group, SupportedLanguage } from '../types';
 
@@ -29,14 +28,18 @@ export const ShareGroupModal: React.FC<ShareGroupModalProps> = ({
 
   useEffect(() => {
     if (isOpen && inviteCode) {
-      QRCode.toDataURL(shareUrl, {
-        width: 256,
-        margin: 2,
-        color: {
-          dark: '#101D2D',
-          light: '#FFFFFF',
-        },
-      })
+      import('qrcode')
+        .then(mod => {
+          const QRCode = mod.default || mod;
+          return QRCode.toDataURL(shareUrl, {
+            width: 256,
+            margin: 2,
+            color: {
+              dark: '#101D2D',
+              light: '#FFFFFF',
+            },
+          });
+        })
         .then(url => setQrCodeDataUrl(url))
         .catch(err => console.error('Failed to generate QR code', err));
     }

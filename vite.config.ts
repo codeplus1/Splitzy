@@ -113,15 +113,36 @@ export default defineConfig(() => {
       sourcemap: false,
       rollupOptions: {
         output: {
-          manualChunks: {
-            'react-vendor': ['react', 'react-dom'],
-            'firebase-vendor': [
-              'firebase/app',
-              'firebase/auth',
-              'firebase/firestore',
-              'firebase/storage',
-            ],
-            'ui-vendor': ['lucide-react', 'motion'],
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return undefined;
+            if (id.includes('@firebase/firestore/lite')) {
+              return 'firebase-firestore-lite';
+            }
+            if (id.includes('@firebase/firestore') || id.includes('firebase/firestore')) {
+              return 'firebase-firestore';
+            }
+            if (id.includes('@firebase/auth') || id.includes('firebase/auth')) {
+              return 'firebase-auth';
+            }
+            if (id.includes('@firebase/storage') || id.includes('firebase/storage')) {
+              return 'firebase-storage';
+            }
+            if (id.includes('@firebase/') || id.includes('firebase/')) {
+              return 'firebase-core';
+            }
+            if (id.includes('qrcode') || id.includes('jsqr') || id.includes('dijkstrajs') || id.includes('pngjs')) {
+              return 'qr-vendor';
+            }
+            if (id.includes('nepali-date-converter')) {
+              return 'calendar-vendor';
+            }
+            if (id.includes('lucide-react') || id.includes('motion') || id.includes('framer-motion')) {
+              return 'ui-vendor';
+            }
+            if (id.includes('react-dom') || id.includes('/react/') || id.includes('scheduler')) {
+              return 'react-vendor';
+            }
+            return undefined;
           },
         },
       },

@@ -1,5 +1,4 @@
 import React, { useState, useRef } from 'react';
-import jsQR from 'jsqr';
 import { X, KeyRound, QrCode, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
 import { SupportedLanguage } from '../types';
 
@@ -62,7 +61,7 @@ export const JoinGroupModal: React.FC<JoinGroupModalProps> = ({
     const reader = new FileReader();
     reader.onload = ev => {
       const img = new Image();
-      img.onload = () => {
+      img.onload = async () => {
         try {
           const canvas = document.createElement('canvas');
           canvas.width = img.width;
@@ -71,6 +70,7 @@ export const JoinGroupModal: React.FC<JoinGroupModalProps> = ({
           if (!ctx) throw new Error('Could not initialize canvas');
           ctx.drawImage(img, 0, 0);
           const imageData = ctx.getImageData(0, 0, img.width, img.height);
+          const { default: jsQR } = await import('jsqr');
           const qrCode = jsQR(imageData.data, imageData.width, imageData.height);
 
           if (qrCode && qrCode.data) {

@@ -31,14 +31,7 @@ import {
   User,
   Auth,
 } from 'firebase/auth';
-import {
-  getStorage,
-  ref as storageRef,
-  uploadBytes,
-  getDownloadURL,
-  deleteObject,
-  FirebaseStorage,
-} from 'firebase/storage';
+import type { FirebaseStorage } from 'firebase/storage';
 import { firebaseConfig } from './firebaseConfig';
 import { validateReceiptFile } from '../core/receipt';
 import { hashAccountPassword } from '../core/security';
@@ -106,7 +99,15 @@ try {
 }
 
 export const db: Firestore = firestoreInstance;
-export const storage: FirebaseStorage = getStorage(app);
+
+let storageInstance: FirebaseStorage | null = null;
+export async function getLazyStorage(): Promise<FirebaseStorage> {
+  if (!storageInstance) {
+    const { getStorage } = await import('firebase/storage');
+    storageInstance = getStorage(app);
+  }
+  return storageInstance;
+}
 
 /**
  * Deeply sanitizes an object before writing to Firestore, stripping out undefined properties
@@ -3281,6 +3282,11 @@ export async function cloudUploadReceipt(
       return { success: false, error: 'Authentication required to upload receipts.' };
     }
 
+    const [{ ref: storageRef, uploadBytes, getDownloadURL }, storage] = await Promise.all([
+      import('firebase/storage'),
+      getLazyStorage(),
+    ]);
+
     const cleanGroupId = groupId.replace(/[^a-zA-Z0-9_.\-]/g, '_');
     const cleanFileName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9_.\-]/g, '_').slice(0, 60)}`;
     const path = `receipts/${cleanGroupId}/${effectiveUid}/${cleanFileName}`;
@@ -3312,6 +3318,10 @@ export async function cloudDeleteReceipt(
 ): Promise<{ success: boolean; error?: string }> {
   try {
     await ensureAuthUser();
+    const [{ ref: storageRef, deleteObject }, storage] = await Promise.all([
+      import('firebase/storage'),
+      getLazyStorage(),
+    ]);
     const fileRef = storageRef(storage, storagePath);
     await deleteObject(fileRef);
     return { success: true };

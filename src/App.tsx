@@ -59,8 +59,6 @@ import {
 } from './core/retention';
 import { Header } from './components/Header';
 import { Dashboard } from './components/Dashboard';
-import { GroupDetail } from './components/GroupDetail';
-import { UserOnboardingModal } from './components/UserOnboardingModal';
 import { ToastContainer, ToastMessage } from './components/Toast';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import {
@@ -70,6 +68,12 @@ import {
   getStoredAppLockPinHash,
 } from './components/AppLockScreen';
 
+const GroupDetail = lazy(() =>
+  import('./components/GroupDetail').then(m => ({ default: m.GroupDetail }))
+);
+const UserOnboardingModal = lazy(() =>
+  import('./components/UserOnboardingModal').then(m => ({ default: m.UserOnboardingModal }))
+);
 const AddExpenseModal = lazy(() =>
   import('./components/AddExpenseModal').then(m => ({ default: m.AddExpenseModal }))
 );
@@ -1779,34 +1783,42 @@ export default function App() {
       {/* Main Workspace Area */}
       <main className="grow max-w-5xl w-full mx-auto px-4 sm:px-6 py-7 sm:py-9">
         {currentGroup ? (
-          <GroupDetail
-            group={currentGroup}
-            members={currentGroupMembers}
-            expenses={appState.expenses}
-            expenseShares={appState.expenseShares}
-            settlements={appState.settlements}
-            pendingExpenseIds={appState.pendingExpenseIds || []}
-            currentUserId={appState.currentUserId}
-            onBackToDashboard={() => setActiveGroupId(null)}
-            onAddExpenseClick={() => {
-              setExpenseToEdit(null);
-              setIsAddExpenseOpen(true);
-            }}
-            onEditExpenseClick={(expense, shares) => {
-              setExpenseToEdit({ expense, shares });
-              setIsAddExpenseOpen(true);
-            }}
-            onDeleteExpense={handleDeleteExpense}
-            onOpenSettleModal={(fromId, toId, amount) => {
-              setSettleParams({ fromId, toId, amount });
-              setIsSettleModalOpen(true);
-            }}
-            onAddMemberToGroup={handleAddMemberToGroup}
-            onUpdateGroup={handleUpdateGroup}
-            onDeleteGroup={handleDeleteGroup}
-            language={appState.language}
-            onShowToast={showToast}
-          />
+          <Suspense
+            fallback={
+              <div className="py-12 text-center text-xs text-[var(--ink-muted)]">
+                Loading group...
+              </div>
+            }
+          >
+            <GroupDetail
+              group={currentGroup}
+              members={currentGroupMembers}
+              expenses={appState.expenses}
+              expenseShares={appState.expenseShares}
+              settlements={appState.settlements}
+              pendingExpenseIds={appState.pendingExpenseIds || []}
+              currentUserId={appState.currentUserId}
+              onBackToDashboard={() => setActiveGroupId(null)}
+              onAddExpenseClick={() => {
+                setExpenseToEdit(null);
+                setIsAddExpenseOpen(true);
+              }}
+              onEditExpenseClick={(expense, shares) => {
+                setExpenseToEdit({ expense, shares });
+                setIsAddExpenseOpen(true);
+              }}
+              onDeleteExpense={handleDeleteExpense}
+              onOpenSettleModal={(fromId, toId, amount) => {
+                setSettleParams({ fromId, toId, amount });
+                setIsSettleModalOpen(true);
+              }}
+              onAddMemberToGroup={handleAddMemberToGroup}
+              onUpdateGroup={handleUpdateGroup}
+              onDeleteGroup={handleDeleteGroup}
+              language={appState.language}
+              onShowToast={showToast}
+            />
+          </Suspense>
         ) : (
           <Dashboard
             groups={appState.groups}
@@ -1825,37 +1837,38 @@ export default function App() {
         )}
       </main>
 
-      {/* First-Time User Name Onboarding / Account Login / Edit Profile Modal */}
-      <UserOnboardingModal
-        isOpen={(needsOnboarding || isEditProfileOpen) && !isSecurityCenterOpen}
-        initialName={currentUserMember?.name || ''}
-        initialUsername={
-          currentUserMember?.isTemporary
-            ? ''
-            : currentUserMember?.username ||
-              (currentUserMember?.name
-                ? generateDefaultUsername(currentUserMember.name, currentUser?.uid)
-                : lastLoggedOutUsername)
-        }
-        initialAvatar={currentUserMember?.avatar || '👨‍💻'}
-        initialColor={currentUserMember?.color || '#101D2D'}
-        initialAuthTab={needsOnboarding ? onboardingAuthTab : 'register'}
-        hasPassword={Boolean(currentUserMember?.passwordHash)}
-        isEditing={!needsOnboarding && isEditProfileOpen}
-        isTemporaryUser={Boolean(currentUserMember?.isTemporary)}
-        onStartTemporaryUse={handleStartTemporaryUse}
-        onSaveUser={handleSaveUserProfile}
-        onLoginAccount={handleLoginAccount}
-        onCompletePinPasswordSetup={handleCompletePinPasswordSetup}
-        onOpenRecoveryCenter={() => setIsSecurityCenterOpen(true)}
-        onLogoutAccount={handleLogoutAccount}
-        onDeleteAccount={handleDeleteAccount}
-        onClose={() => setIsEditProfileOpen(false)}
-        language={appState.language}
-      />
-
       {/* Modals (Lazy-loaded with Suspense) */}
       <Suspense fallback={null}>
+        {(needsOnboarding || isEditProfileOpen) && !isSecurityCenterOpen && (
+          <UserOnboardingModal
+            isOpen={true}
+            initialName={currentUserMember?.name || ''}
+            initialUsername={
+              currentUserMember?.isTemporary
+                ? ''
+                : currentUserMember?.username ||
+                  (currentUserMember?.name
+                    ? generateDefaultUsername(currentUserMember.name, currentUser?.uid)
+                    : lastLoggedOutUsername)
+            }
+            initialAvatar={currentUserMember?.avatar || '👨‍💻'}
+            initialColor={currentUserMember?.color || '#101D2D'}
+            initialAuthTab={needsOnboarding ? onboardingAuthTab : 'register'}
+            hasPassword={Boolean(currentUserMember?.passwordHash)}
+            isEditing={!needsOnboarding && isEditProfileOpen}
+            isTemporaryUser={Boolean(currentUserMember?.isTemporary)}
+            onStartTemporaryUse={handleStartTemporaryUse}
+            onSaveUser={handleSaveUserProfile}
+            onLoginAccount={handleLoginAccount}
+            onCompletePinPasswordSetup={handleCompletePinPasswordSetup}
+            onOpenRecoveryCenter={() => setIsSecurityCenterOpen(true)}
+            onLogoutAccount={handleLogoutAccount}
+            onDeleteAccount={handleDeleteAccount}
+            onClose={() => setIsEditProfileOpen(false)}
+            language={appState.language}
+          />
+        )}
+
         {isAddExpenseOpen && currentGroup && (
           <AddExpenseModal
             onClose={() => {
