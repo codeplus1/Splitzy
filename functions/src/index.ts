@@ -1,312 +1,380 @@
+import * as admin from 'firebase-admin';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { logger } from 'firebase-functions';
+
+if (admin.apps.length === 0) {
+  admin.initializeApp();
+}
+
+export type RetentionPeriod = '3d' | '15d' | '1m' | 'never';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 /**
- * Splitze — Scheduled Server-Side Group Retention & Cleanup Job
- *
- * Runs server-side on a schedule (every 24 hours via Cloud Scheduler / Firebase Functions v2)
- * without depending on any browser timer, React state, localStorage, or PWA being open.
- *
- * Strictly enforces all 9 cleanup requirements:
- * 1. Finds groups where `settled == true`.
- * 2. Checks `settledAt` (must be a valid positive timestamp).
- * 3. Checks the selected `retentionOption` (`3_days`, `15_days`, or `1_month`) and `keepGroup`.
- * 4. Determines whether the expiration time has passed (`now >= expirationTime`).
- * 5. Deletes the group's related Firestore documents and subcollections (`expenses`, `expenseShares`, `settlements`, `groupMembers`, and any nested subcollections).
- * 6. Deletes associated receipt files from Firebase Storage (`/receipts/{groupId}/...` and `receiptStoragePath`).
- * 7. Deletes related invitations (`inviteCodes/{code}`) and group-exclusive member records.
- * 8. Removes the expired parent `/groups/{groupId}` document last so no orphaned records remain.
- * 9. Logs structured diagnostic summaries (counts & groupId) without storing personal data.
+ * Resolves the configured retention window in milliseconds:
+ * - 3 days ('3d' | '3days' | 3)
+ * - 15 days ('15d' | '15days' | 15) [default]
+ * - 1 month ('1m' | '1month' | '30d' | 30)
  */
-
-export type RetentionOption = '3_days' | '15_days' | '1_month';
-
-export interface CleanupGroupRecord {
-  id: string;
-  settled?: boolean;
-  settledAt?: number | null;
-  retentionOption?: RetentionOption;
-  scheduledDeleteAt?: number | null;
-  keepGroup?: boolean;
-  inviteCode?: string;
-}
-
-export interface CleanupDiagnosticLog {
-  groupId: string;
-  retentionOption: RetentionOption;
-  settledAt: number;
-  expiredAt: number;
-  deletedExpensesCount: number;
-  deletedSharesCount: number;
-  deletedSettlementsCount: number;
-  deletedGroupMembersCount: number;
-  deletedExclusiveMembersCount: number;
-  deletedInviteCodesCount: number;
-  deletedReceiptsCount: number;
-  status: 'deleted' | 'failed';
-  errorCode?: string;
-}
-
-const RETENTION_MS: Record<RetentionOption, number> = {
-  '3_days': 3 * 24 * 60 * 60 * 1000,
-  '15_days': 15 * 24 * 60 * 60 * 1000,
-  '1_month': 30 * 24 * 60 * 60 * 1000,
-};
-
-export function computeExpirationTimestamp(
-  settledAt: number,
-  retentionOption: RetentionOption = '15_days'
+export function resolveRetentionDurationMs(
+  retentionPeriod?: RetentionPeriod | string | number | null
 ): number {
-  const duration = RETENTION_MS[retentionOption] ?? RETENTION_MS['15_days'];
-  return settledAt + duration;
+  if (typeof retentionPeriod === 'number' && retentionPeriod > 0) {
+    return retentionPeriod * DAY_MS;
+  }
+  switch (retentionPeriod) {
+    case '3d':
+    case '3days':
+    case '3_days':
+    case '3':
+      return 3 * DAY_MS;
+    case '15d':
+    case '15days':
+    case '15_days':
+    case '15':
+      return 15 * DAY_MS;
+    case '1m':
+    case '1month':
+    case '1_month':
+    case '30d':
+    case '30days':
+    case '30':
+      return 30 * DAY_MS;
+    case 'never':
+      return Infinity;
+    default:
+      return 15 * DAY_MS;
+  }
 }
 
 /**
- * Pure predicate used by both the Cloud Function and emulator tests to verify
- * whether a group document is eligible for automatic server-side deletion.
+ * Parses `settledAt` from Firestore Timestamp, ISO string, or epoch milliseconds.
  */
-export function isSettledGroupExpired(
-  group: CleanupGroupRecord | null | undefined,
-  nowMs: number = Date.now()
+export function parseSettledAtMs(settledAt: unknown): number | null {
+  if (!settledAt) return null;
+  if (typeof settledAt === 'number' && Number.isFinite(settledAt)) {
+    return settledAt;
+  }
+  if (typeof settledAt === 'string') {
+    const parsed = Date.parse(settledAt);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  if (
+    typeof settledAt === 'object' &&
+    settledAt !== null &&
+    typeof (settledAt as { toMillis?: () => number }).toMillis === 'function'
+  ) {
+    return (settledAt as { toMillis: () => number }).toMillis();
+  }
+  return null;
+}
+
+/**
+ * Determines whether a group document with `settled == true` has exceeded its configured
+ * retention period (3 days, 15 days, or 1 month).
+ */
+export function isGroupPastRetentionPeriod(
+  groupData: Record<string, any>,
+  nowMs = Date.now()
 ): boolean {
-  if (!group) return false;
-  if (group.settled !== true) return false;
-  if (group.keepGroup === true) return false;
-  if (typeof group.settledAt !== 'number' || !Number.isFinite(group.settledAt) || group.settledAt <= 0) {
+  if (groupData.settled !== true) {
     return false;
   }
-
-  const option: RetentionOption =
-    group.retentionOption === '3_days' ||
-    group.retentionOption === '15_days' ||
-    group.retentionOption === '1_month'
-      ? group.retentionOption
-      : '15_days';
-
-  const expirationTime = computeExpirationTimestamp(group.settledAt, option);
-
-  return nowMs >= expirationTime;
+  const settledAtMs = parseSettledAtMs(groupData.settledAt);
+  if (settledAtMs === null) {
+    return false;
+  }
+  const retentionMs = resolveRetentionDurationMs(
+    groupData.retentionPeriod ?? groupData.autoDeleteRetention ?? groupData.retentionDays
+  );
+  if (!Number.isFinite(retentionMs)) {
+    return false;
+  }
+  return nowMs - settledAtMs >= retentionMs;
 }
 
 /**
- * Adapter interface allowing the exact same server-side cleanup job logic to run
- * against Firebase Admin SDK in Cloud Functions and against the Firestore/Storage Emulator in tests.
+ * Extracts a Firebase Storage object path from either an explicit `receiptStoragePath`
+ * or a Firebase Storage download URL (`.../o/receipts%2F...`).
  */
-export interface ServerCleanupBackend {
-  findSettledGroups(): Promise<CleanupGroupRecord[]>;
-  deleteGroupCascade(group: CleanupGroupRecord, nowMs: number): Promise<CleanupDiagnosticLog>;
+export function extractReceiptStoragePath(expenseData: Record<string, any>): string | null {
+  if (
+    typeof expenseData.receiptStoragePath === 'string' &&
+    expenseData.receiptStoragePath.trim().length > 0
+  ) {
+    return expenseData.receiptStoragePath.trim();
+  }
+  const receiptUrl = expenseData.receiptUrl;
+  if (typeof receiptUrl === 'string' && receiptUrl.includes('/o/')) {
+    try {
+      const urlObj = new URL(receiptUrl);
+      const match = urlObj.pathname.match(/\/o\/(.+)$/);
+      if (match && match[1]) {
+        return decodeURIComponent(match[1]);
+      }
+    } catch {
+      // Ignore malformed URL
+    }
+  }
+  return null;
 }
 
-export async function runScheduledExpiredGroupsCleanup(
-  backend: ServerCleanupBackend,
-  nowMs: number = Date.now(),
-  logger: {
-    info: (msg: string, meta?: Record<string, unknown>) => void;
-    error: (msg: string, meta?: Record<string, unknown>) => void;
-  } = console
-): Promise<{
-  scannedCount: number;
-  expiredCount: number;
-  deletedGroupIds: string[];
-  logs: CleanupDiagnosticLog[];
-}> {
-  const settledGroups = await backend.findSettledGroups();
-  const expiredGroups = settledGroups.filter(g => isSettledGroupExpired(g, nowMs));
-  const deletedGroupIds: string[] = [];
-  const logs: CleanupDiagnosticLog[] = [];
+/**
+ * Deletes a list of Firestore DocumentReferences in chunks of up to 400 operations per batch.
+ */
+async function deleteRefsInBatches(
+  db: admin.firestore.Firestore,
+  refs: admin.firestore.DocumentReference[]
+): Promise<number> {
+  if (refs.length === 0) return 0;
+  const uniqueMap = new Map<string, admin.firestore.DocumentReference>();
+  for (const ref of refs) {
+    uniqueMap.set(ref.path, ref);
+  }
+  const uniqueRefs = Array.from(uniqueMap.values());
+  const CHUNK_SIZE = 400;
+  let deletedCount = 0;
 
-  for (const group of expiredGroups) {
-    try {
-      const diag = await backend.deleteGroupCascade(group, nowMs);
-      logs.push(diag);
-      if (diag.status === 'deleted') {
-        deletedGroupIds.push(group.id);
-        logger.info('Automatic post-settlement group cleanup succeeded', {
-          groupId: diag.groupId,
-          retentionOption: diag.retentionOption,
-          deletedExpensesCount: diag.deletedExpensesCount,
-          deletedSharesCount: diag.deletedSharesCount,
-          deletedSettlementsCount: diag.deletedSettlementsCount,
-          deletedGroupMembersCount: diag.deletedGroupMembersCount,
-          deletedInviteCodesCount: diag.deletedInviteCodesCount,
-          deletedReceiptsCount: diag.deletedReceiptsCount,
-        });
+  for (let i = 0; i < uniqueRefs.length; i += CHUNK_SIZE) {
+    const chunk = uniqueRefs.slice(i, i + CHUNK_SIZE);
+    const batch = db.batch();
+    for (const ref of chunk) {
+      batch.delete(ref);
+    }
+    await batch.commit();
+    deletedCount += chunk.length;
+  }
+
+  return deletedCount;
+}
+
+/**
+ * Recursively deletes any nested subcollections attached to a document reference.
+ */
+async function deleteDocumentSubcollections(
+  db: admin.firestore.Firestore,
+  docRef: admin.firestore.DocumentReference
+): Promise<number> {
+  let deletedSubDocs = 0;
+  const subcollections = await docRef.listCollections();
+  for (const subcol of subcollections) {
+    const snap = await subcol.get();
+    if (!snap.empty) {
+      for (const childDoc of snap.docs) {
+        deletedSubDocs += await deleteDocumentSubcollections(db, childDoc.ref);
       }
-    } catch (err: any) {
-      const option: RetentionOption = group.retentionOption || '15_days';
-      const settledAt = group.settledAt || 0;
-      const failLog: CleanupDiagnosticLog = {
-        groupId: group.id,
-        retentionOption: option,
-        settledAt,
-        expiredAt: computeExpirationTimestamp(settledAt, option),
-        deletedExpensesCount: 0,
-        deletedSharesCount: 0,
-        deletedSettlementsCount: 0,
-        deletedGroupMembersCount: 0,
-        deletedExclusiveMembersCount: 0,
-        deletedInviteCodesCount: 0,
-        deletedReceiptsCount: 0,
-        status: 'failed',
-        errorCode: err?.code || 'CLEANUP_ERROR',
-      };
-      logs.push(failLog);
-      logger.error('Automatic post-settlement group cleanup failed', {
-        groupId: group.id,
-        errorCode: failLog.errorCode,
-      });
+      deletedSubDocs += await deleteRefsInBatches(
+        db,
+        snap.docs.map(d => d.ref)
+      );
+    }
+  }
+  return deletedSubDocs;
+}
+
+/**
+ * Executes a complete cleanup for a single expired settled group:
+ * 1. Queries and deletes associated top-level documents (`expenses`, `expenseShares`, `settlements`, `groupMembers`, `inviteCodes`)
+ *    and group-scoped temporary `members`.
+ * 2. Deletes any nested subcollections under `/groups/{groupId}` and its child documents.
+ * 3. Deletes all stored receipt files in Firebase Storage (`receipts/{groupId}/**` as well as any individual receipt paths).
+ * 4. Deletes the `/groups/{groupId}` document itself.
+ */
+export async function executeExpiredGroupCleanup(
+  db: admin.firestore.Firestore,
+  bucket: ReturnType<admin.storage.Storage['bucket']>,
+  groupDoc: admin.firestore.QueryDocumentSnapshot | admin.firestore.DocumentSnapshot
+): Promise<{
+  groupId: string;
+  deletedFirestoreDocs: number;
+  deletedSubcollectionDocs: number;
+  deletedReceipts: number;
+}> {
+  const groupData = groupDoc.data() || {};
+  const groupId: string = groupData.id || groupDoc.id;
+  const refsToDelete: admin.firestore.DocumentReference[] = [];
+  const receiptPaths = new Set<string>();
+  let deletedSubcollectionDocs = 0;
+
+  // 1. Collect expenses for this group and any receipt storage paths
+  const expensesSnap = await db
+    .collection('expenses')
+    .where('groupId', '==', groupId)
+    .get();
+  const expenseIds: string[] = [];
+  for (const expDoc of expensesSnap.docs) {
+    expenseIds.push(expDoc.id);
+    refsToDelete.push(expDoc.ref);
+    const extractedPath = extractReceiptStoragePath(expDoc.data());
+    if (extractedPath) {
+      receiptPaths.add(extractedPath);
+    }
+    deletedSubcollectionDocs += await deleteDocumentSubcollections(db, expDoc.ref);
+  }
+
+  // 2. Collect expenseShares by groupId AND by expenseId chunks (for any shares without groupId)
+  const sharesByGroupSnap = await db
+    .collection('expenseShares')
+    .where('groupId', '==', groupId)
+    .get();
+  for (const shDoc of sharesByGroupSnap.docs) {
+    refsToDelete.push(shDoc.ref);
+  }
+
+  for (let i = 0; i < expenseIds.length; i += 30) {
+    const chunkIds = expenseIds.slice(i, i + 30);
+    if (chunkIds.length > 0) {
+      const sharesByExpSnap = await db
+        .collection('expenseShares')
+        .where('expenseId', 'in', chunkIds)
+        .get();
+      for (const shDoc of sharesByExpSnap.docs) {
+        refsToDelete.push(shDoc.ref);
+      }
     }
   }
 
+  // 3. Collect settlements for this group
+  const settlementsSnap = await db
+    .collection('settlements')
+    .where('groupId', '==', groupId)
+    .get();
+  for (const stDoc of settlementsSnap.docs) {
+    refsToDelete.push(stDoc.ref);
+  }
+
+  // 4. Collect groupMembers mappings for this group
+  const groupMembersSnap = await db
+    .collection('groupMembers')
+    .where('groupId', '==', groupId)
+    .get();
+  for (const gmDoc of groupMembersSnap.docs) {
+    refsToDelete.push(gmDoc.ref);
+  }
+
+  // 5. Collect inviteCodes associated with this group
+  if (typeof groupData.inviteCode === 'string' && groupData.inviteCode.trim().length > 0) {
+    refsToDelete.push(db.collection('inviteCodes').doc(groupData.inviteCode.trim()));
+  }
+  const inviteCodesSnap = await db
+    .collection('inviteCodes')
+    .where('groupId', '==', groupId)
+    .get();
+  for (const icDoc of inviteCodesSnap.docs) {
+    refsToDelete.push(icDoc.ref);
+  }
+
+  // 6. Collect temporary/guest member profiles scoped exclusively to this group
+  const tempMembersSnap = await db
+    .collection('members')
+    .where('groupId', '==', groupId)
+    .get();
+  for (const mDoc of tempMembersSnap.docs) {
+    const mData = mDoc.data();
+    if (mData.isTemporary || !mData.username) {
+      refsToDelete.push(mDoc.ref);
+    }
+  }
+
+  // 7. Recursively delete any subcollections under /groups/{groupId}
+  deletedSubcollectionDocs += await deleteDocumentSubcollections(db, groupDoc.ref);
+
+  // 8. Delete stored receipts in Firebase Storage (prefix `receipts/{groupId}/` + explicit paths)
+  let deletedReceipts = 0;
+  const cleanGroupId = groupId.replace(/[^a-zA-Z0-9_.\-]/g, '_');
+  const storagePrefix = `receipts/${cleanGroupId}/`;
+
+  try {
+    const [prefixFiles] = await bucket.getFiles({ prefix: storagePrefix });
+    for (const file of prefixFiles) {
+      receiptPaths.add(file.name);
+    }
+  } catch (err) {
+    logger.warn(`Notice listing storage prefix ${storagePrefix}:`, err);
+  }
+
+  for (const storagePath of receiptPaths) {
+    try {
+      await bucket.file(storagePath).delete({ ignoreNotFound: true });
+      deletedReceipts++;
+    } catch (err) {
+      logger.warn(`Failed to delete receipt at ${storagePath}:`, err);
+    }
+  }
+
+  // 9. Delete all associated documents first, then the parent group document
+  const deletedAssociated = await deleteRefsInBatches(db, refsToDelete);
+  await groupDoc.ref.delete();
+
   return {
-    scannedCount: settledGroups.length,
-    expiredCount: expiredGroups.length,
-    deletedGroupIds,
-    logs,
+    groupId,
+    deletedFirestoreDocs: deletedAssociated + 1,
+    deletedSubcollectionDocs,
+    deletedReceipts,
   };
 }
-
-export const runServerSideGroupCleanupJob = runScheduledExpiredGroupsCleanup;
 
 /**
- * Creates a Firebase Admin SDK backend for the scheduled Cloud Function
- * that recursively deletes all related documents, subcollections, and Storage receipts.
+ * Scheduled Firebase Cloud Function (`cleanupSettledGroups`):
+ * Runs periodically (every 6 hours) to query all groups where `settled == true` and
+ * `settledAt` is older than the group's configured retention period (3 days, 15 days, or 1 month),
+ * then deletes all associated documents, subcollections, and stored receipts.
  */
-export function createAdminCleanupBackend(
-  adminFirestore: any,
-  adminBucket: any
-): ServerCleanupBackend {
-  return {
-    async findSettledGroups(): Promise<CleanupGroupRecord[]> {
-      const snap = await adminFirestore
-        .collection('groups')
-        .where('settled', '==', true)
-        .get();
-      return snap.docs.map((docSnap: any) => ({
-        id: docSnap.id,
-        ...docSnap.data(),
-      }));
-    },
+export const cleanupSettledGroups = onSchedule(
+  {
+    schedule: 'every 6 hours',
+    timeZone: 'UTC',
+    retryCount: 2,
+  },
+  async () => {
+    const db = admin.firestore();
+    const bucket = admin.storage().bucket();
+    const nowMs = Date.now();
 
-    async deleteGroupCascade(
-      group: CleanupGroupRecord,
-      _nowMs: number
-    ): Promise<CleanupDiagnosticLog> {
-      const groupId = group.id;
-      const option: RetentionOption = group.retentionOption || '15_days';
-      const settledAt = group.settledAt || 0;
+    logger.info('Starting scheduled settled-groups retention cleanup...', {
+      timestamp: new Date(nowMs).toISOString(),
+    });
 
-      // 1. Find all expenses for this group
-      const expensesSnap = await adminFirestore
-        .collection('expenses')
-        .where('groupId', '==', groupId)
-        .get();
-      const expenseDocs = expensesSnap.docs;
+    const settledGroupsSnap = await db
+      .collection('groups')
+      .where('settled', '==', true)
+      .get();
 
-      // 2. Find all expenseShares for this group
-      const sharesSnap = await adminFirestore
-        .collection('expenseShares')
-        .where('groupId', '==', groupId)
-        .get();
-      const shareDocs = sharesSnap.docs;
+    if (settledGroupsSnap.empty) {
+      logger.info('No settled groups found requiring retention evaluation.');
+      return;
+    }
 
-      // 3. Find all settlements for this group
-      const settlementsSnap = await adminFirestore
-        .collection('settlements')
-        .where('groupId', '==', groupId)
-        .get();
-      const settlementDocs = settlementsSnap.docs;
+    let expiredGroupCount = 0;
+    let totalDocsDeleted = 0;
+    let totalSubdocsDeleted = 0;
+    let totalReceiptsDeleted = 0;
 
-      // 4. Find all groupMembers for this group
-      const gmSnap = await adminFirestore
-        .collection('groupMembers')
-        .where('groupId', '==', groupId)
-        .get();
-      const gmDocs = gmSnap.docs;
-
-      // 5. Find any members exclusively created for this group
-      const exclusiveMembersSnap = await adminFirestore
-        .collection('members')
-        .where('groupId', '==', groupId)
-        .get();
-      const exclusiveMemberDocs = exclusiveMembersSnap.docs;
-
-      // 6. Delete associated Storage receipt files under /receipts/{groupId}/ and explicit receiptStoragePath
-      let deletedReceiptsCount = 0;
-      if (adminBucket) {
-        const deletedPaths = new Set<string>();
-        try {
-          const [files] = await adminBucket.getFiles({
-            prefix: `receipts/${groupId}/`,
-          });
-          for (const file of files) {
-            await file.delete().catch(() => {});
-            deletedPaths.add(file.name);
-            deletedReceiptsCount++;
-          }
-        } catch {
-          // Ignore prefix listing error and continue to explicit paths
-        }
-
-        for (const expDoc of expenseDocs) {
-          const expData = expDoc.data();
-          if (expData?.receiptStoragePath && !deletedPaths.has(expData.receiptStoragePath)) {
-            try {
-              await adminBucket.file(expData.receiptStoragePath).delete();
-              deletedPaths.add(expData.receiptStoragePath);
-              deletedReceiptsCount++;
-            } catch {
-              // Ignore if already deleted
-            }
-          }
-        }
+    for (const groupDoc of settledGroupsSnap.docs) {
+      const groupData = groupDoc.data();
+      if (!isGroupPastRetentionPeriod(groupData, nowMs)) {
+        continue;
       }
 
-      // 7. Delete all related Firestore documents & any nested subcollections
-      const refsToDelete: any[] = [
-        ...shareDocs.map((d: any) => d.ref),
-        ...expenseDocs.map((d: any) => d.ref),
-        ...settlementDocs.map((d: any) => d.ref),
-        ...gmDocs.map((d: any) => d.ref),
-        ...exclusiveMemberDocs.map((d: any) => d.ref),
-      ];
+      try {
+        const result = await executeExpiredGroupCleanup(db, bucket, groupDoc);
+        expiredGroupCount++;
+        totalDocsDeleted += result.deletedFirestoreDocs;
+        totalSubdocsDeleted += result.deletedSubcollectionDocs;
+        totalReceiptsDeleted += result.deletedReceipts;
 
-      let deletedInviteCodesCount = 0;
-      if (group.inviteCode) {
-        refsToDelete.push(adminFirestore.collection('inviteCodes').doc(group.inviteCode));
-        deletedInviteCodesCount = 1;
+        logger.info(`Cleaned up expired settled group ${result.groupId}`, result);
+      } catch (err) {
+        logger.error(`Failed to clean up settled group ${groupDoc.id}:`, err);
       }
+    }
 
-      const CHUNK_SIZE = 400;
-      for (let i = 0; i < refsToDelete.length; i += CHUNK_SIZE) {
-        const chunk = refsToDelete.slice(i, i + CHUNK_SIZE);
-        const batch = adminFirestore.batch();
-        for (const r of chunk) {
-          batch.delete(r);
-        }
-        await batch.commit();
-      }
-
-      // Explicitly delete any subcollections under /groups/{groupId} and the group document itself
-      const groupRef = adminFirestore.collection('groups').doc(groupId);
-      if (typeof adminFirestore.recursiveDelete === 'function') {
-        await adminFirestore.recursiveDelete(groupRef);
-      } else {
-        await groupRef.delete();
-      }
-
-      return {
-        groupId,
-        retentionOption: option,
-        settledAt,
-        expiredAt: computeExpirationTimestamp(settledAt, option),
-        deletedExpensesCount: expenseDocs.length,
-        deletedSharesCount: shareDocs.length,
-        deletedSettlementsCount: settlementDocs.length,
-        deletedGroupMembersCount: gmDocs.length,
-        deletedExclusiveMembersCount: exclusiveMemberDocs.length,
-        deletedInviteCodesCount,
-        deletedReceiptsCount,
-        status: 'deleted',
-      };
-    },
-  };
-}
-
+    logger.info('Completed settled-groups retention cleanup.', {
+      evaluatedGroups: settledGroupsSnap.size,
+      expiredGroupCount,
+      totalDocsDeleted,
+      totalSubdocsDeleted,
+      totalReceiptsDeleted,
+    });
+  }
+);

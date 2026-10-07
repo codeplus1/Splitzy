@@ -1,254 +1,153 @@
-import { Group, RetentionOption } from '../types';
+import {
+  Group,
+  Member,
+  Expense,
+  ExpenseShare,
+  SettlementRecord,
+} from '../types';
+import {
+  calculateMemberBalances,
+  optimizeSettlements,
+} from './calculation';
 
-export const RETENTION_OPTIONS: {
-  value: RetentionOption;
-  labelEn: string;
+export type RetentionPeriod = '3d' | '15d' | '1m' | 'never';
+
+export interface RetentionOption {
+  value: RetentionPeriod;
+  label: string;
   labelFr: string;
   durationMs: number;
-  days: number;
-}[] = [
+}
+
+export const RETENTION_PERIOD_OPTIONS: RetentionOption[] = [
   {
-    value: '3_days',
-    labelEn: '3 days',
-    labelFr: '3 jours',
+    value: '3d',
+    label: '3 Days after settled',
+    labelFr: '3 jours après règlement',
     durationMs: 3 * 24 * 60 * 60 * 1000,
-    days: 3,
   },
   {
-    value: '15_days',
-    labelEn: '15 days',
-    labelFr: '15 jours',
+    value: '15d',
+    label: '15 Days after settled',
+    labelFr: '15 jours après règlement',
     durationMs: 15 * 24 * 60 * 60 * 1000,
-    days: 15,
   },
   {
-    value: '1_month',
-    labelEn: '1 month',
-    labelFr: '1 mois',
+    value: '1m',
+    label: '1 Month (30 Days) after settled',
+    labelFr: '1 mois (30 jours) après règlement',
     durationMs: 30 * 24 * 60 * 60 * 1000,
-    days: 30,
+  },
+  {
+    value: 'never',
+    label: 'Never (Keep indefinitely)',
+    labelFr: 'Jamais (Conserver indéfiniment)',
+    durationMs: Infinity,
   },
 ];
 
-export const DEFAULT_RETENTION_OPTION: RetentionOption = '15_days';
+export const DEFAULT_RETENTION_PERIOD: RetentionPeriod = '15d';
 
-export function getRetentionDurationMs(option?: RetentionOption): number {
-  const found = RETENTION_OPTIONS.find(o => o.value === option);
-  return found ? found.durationMs : 15 * 24 * 60 * 60 * 1000;
-}
-
-export function getRetentionLabel(option?: RetentionOption, isFrench = false): string {
-  const found = RETENTION_OPTIONS.find(o => o.value === (option || DEFAULT_RETENTION_OPTION));
-  if (!found) return isFrench ? '15 jours' : '15 days';
-  return isFrench ? found.labelFr : found.labelEn;
-}
-
-export function getRetentionOptionMeta(option?: RetentionOption) {
-  return (
-    RETENTION_OPTIONS.find(o => o.value === (option || DEFAULT_RETENTION_OPTION)) ||
-    RETENTION_OPTIONS[1]
-  );
-}
-
-/**
- * Computes the exact scheduled deletion timestamp in epoch milliseconds.
- * Example: If settled on Jan 10 and 15 days is selected, returns Jan 25.
- */
-export function computeScheduledDeletionTime(
-  settledAtMs: number,
-  retentionOption: RetentionOption = DEFAULT_RETENTION_OPTION
+export function getRetentionDurationMs(
+  period: RetentionPeriod | string | number | undefined
 ): number {
-  return settledAtMs + getRetentionDurationMs(retentionOption);
+  if (typeof period === 'number' && period > 0) {
+    return period * 24 * 60 * 60 * 1000;
+  }
+  switch (period) {
+    case '3d':
+    case '3days':
+    case '3_days':
+    case '3':
+      return 3 * 24 * 60 * 60 * 1000;
+    case '15d':
+    case '15days':
+    case '15_days':
+    case '15':
+      return 15 * 24 * 60 * 60 * 1000;
+    case '1m':
+    case '1month':
+    case '1_month':
+    case '30d':
+    case '30days':
+    case '30':
+      return 30 * 24 * 60 * 60 * 1000;
+    case 'never':
+      return Infinity;
+    default:
+      return 15 * 24 * 60 * 60 * 1000;
+  }
 }
 
-export const computeExpirationTimestamp = computeScheduledDeletionTime;
-
 /**
- * Transitions a group into the settled state with `settled == true`, `settledAt`,
- * and `scheduledDeleteAt` computed from the selected retention period.
+ * Evaluates whether a group with expenses has all balances settled (`optimizedDebts.length === 0`)
+ * and returns the next `settled` boolean and `settledAt` ISO timestamp.
  */
-export function buildSettledGroupState(
+export function computeGroupSettlementState(
   group: Group,
-  settledAtMs: number = Date.now(),
-  retentionOption?: RetentionOption
-): Group {
-  const effectiveRetention = retentionOption || group.retentionOption || DEFAULT_RETENTION_OPTION;
-  const keepGroup = Boolean(group.keepGroup);
-  return {
-    ...group,
-    settled: true,
-    settledAt: settledAtMs,
-    retentionOption: effectiveRetention,
-    keepGroup,
-    scheduledDeleteAt: keepGroup
-      ? null
-      : computeScheduledDeletionTime(settledAtMs, effectiveRetention),
-  };
-}
+  groupMembers: Member[],
+  groupExpenses: Expense[],
+  groupShares: ExpenseShare[],
+  groupSettlements: SettlementRecord[],
+  nowISO = new Date().toISOString()
+): { settled: boolean; settledAt?: string; retentionPeriod: RetentionPeriod } {
+  const retentionPeriod: RetentionPeriod = group.retentionPeriod || DEFAULT_RETENTION_PERIOD;
 
-/**
- * Cancels pending deletion and returns a settled group back to the active state
- * when a new expense or unsettled balance is added before expiration.
- */
-export function buildActiveGroupState(group: Group): Group {
+  // A group is considered "settled" for retention purposes only once it has at least one expense
+  // and all net balances among members are settled (0 pending transfers).
+  if (groupExpenses.length === 0) {
+    return {
+      settled: false,
+      settledAt: undefined,
+      retentionPeriod,
+    };
+  }
+
+  const balances = calculateMemberBalances(
+    groupMembers,
+    groupExpenses,
+    groupShares,
+    groupSettlements
+  );
+  const pendingTransfers = optimizeSettlements(balances, group.baseCurrency);
+  const isFullySettled = pendingTransfers.length === 0;
+
+  if (isFullySettled) {
+    return {
+      settled: true,
+      settledAt: group.settled && group.settledAt ? group.settledAt : nowISO,
+      retentionPeriod,
+    };
+  }
+
   return {
-    ...group,
     settled: false,
-    settledAt: null,
-    scheduledDeleteAt: null,
-    keepGroup: false,
-  };
-}
-
-export function buildKeepGroupState(group: Group): Group {
-  return setGroupKeepRetention(group, true);
-}
-
-export function evaluateGroupSettlementTransition(
-  group: Group,
-  hasUnsettledBalances: boolean,
-  nowMs: number = Date.now()
-): Group | null {
-  if (!hasUnsettledBalances && !group.settled) {
-    return buildSettledGroupState(
-      group,
-      nowMs,
-      group.retentionOption || DEFAULT_RETENTION_OPTION
-    );
-  }
-  if (hasUnsettledBalances && group.settled) {
-    return buildActiveGroupState(group);
-  }
-  return null;
-}
-
-/**
- * Explicitly marks a settled group as retained ("Keep Group") so automatic cleanup will not delete it,
- * or re-enables the retention countdown.
- */
-export function setGroupKeepRetention(
-  group: Group,
-  keep: boolean,
-  nowMs: number = Date.now()
-): Group {
-  const effectiveRetention = group.retentionOption || DEFAULT_RETENTION_OPTION;
-  const baseSettledAt = group.settledAt || nowMs;
-  return {
-    ...group,
-    keepGroup: keep,
-    retentionOption: effectiveRetention,
-    scheduledDeleteAt:
-      !keep && group.settled
-        ? computeScheduledDeletionTime(baseSettledAt, effectiveRetention)
-        : null,
+    settledAt: undefined,
+    retentionPeriod,
   };
 }
 
 /**
- * Strictly determines whether a group is eligible for automatic post-settlement deletion.
- *
- * A group is NEVER deleted simply because it has been inactive.
- * It is ONLY eligible when ALL of the following hold:
- * 1. `group.settled === true`
- * 2. `typeof group.settledAt === 'number' && group.settledAt > 0`
- * 3. `group.keepGroup !== true`
- * 4. The configured retention period (`3_days`, `15_days`, or `1_month`) has expired (`nowMs >= expirationMs`)
+ * Checks whether a settled group's `settledAt` timestamp is older than its configured
+ * retention period (3 days, 15 days, or 1 month).
  */
-export function isGroupExpiredForCleanup(
-  group: Partial<Group> | null | undefined,
-  nowMs: number = Date.now()
+export function isSettledGroupExpired(
+  group: Pick<Group, 'settled' | 'settledAt' | 'retentionPeriod'>,
+  nowMs = Date.now()
 ): boolean {
-  if (!group) return false;
-  if (group.settled !== true) return false;
-  if (group.keepGroup === true) return false;
-  if (typeof group.settledAt !== 'number' || !Number.isFinite(group.settledAt) || group.settledAt <= 0) {
+  if (!group.settled || !group.settledAt) {
     return false;
   }
-
-  const retentionOption: RetentionOption =
-    group.retentionOption === '3_days' ||
-    group.retentionOption === '15_days' ||
-    group.retentionOption === '1_month'
-      ? group.retentionOption
-      : DEFAULT_RETENTION_OPTION;
-
-  const expirationTime = computeScheduledDeletionTime(group.settledAt, retentionOption);
-
-  return nowMs >= expirationTime;
-}
-
-export const isGroupCleanupExpired = isGroupExpiredForCleanup;
-
-/**
- * Returns human-readable remaining days and formatted scheduled deletion date.
- */
-export function getGroupCleanupCountdownInfo(
-  group: Group,
-  nowMs: number = Date.now()
-): {
-  isSettled: boolean;
-  isKept: boolean;
-  isExpired: boolean;
-  retentionOption: RetentionOption;
-  retentionLabel: string;
-  scheduledDeleteAt: number | null;
-  scheduledDateFormatted: string | null;
-  daysRemaining: number | null;
-  remainingDays: number | null;
-} {
-  const retentionOption = group.retentionOption || DEFAULT_RETENTION_OPTION;
-  const retentionLabel = getRetentionLabel(retentionOption);
-
-  if (!group.settled || !group.settledAt) {
-    return {
-      isSettled: false,
-      isKept: Boolean(group.keepGroup),
-      isExpired: false,
-      retentionOption,
-      retentionLabel,
-      scheduledDeleteAt: null,
-      scheduledDateFormatted: null,
-      daysRemaining: null,
-      remainingDays: null,
-    };
+  const durationMs = getRetentionDurationMs(group.retentionPeriod);
+  if (!Number.isFinite(durationMs)) {
+    return false;
   }
-
-  if (group.keepGroup) {
-    return {
-      isSettled: true,
-      isKept: true,
-      isExpired: false,
-      retentionOption,
-      retentionLabel,
-      scheduledDeleteAt: null,
-      scheduledDateFormatted: null,
-      daysRemaining: null,
-      remainingDays: null,
-    };
+  const settledAtMs =
+    typeof group.settledAt === 'number'
+      ? group.settledAt
+      : Date.parse(String(group.settledAt));
+  if (Number.isNaN(settledAtMs)) {
+    return false;
   }
-
-  const scheduledDeleteAt =
-    typeof group.scheduledDeleteAt === 'number' && group.scheduledDeleteAt > group.settledAt
-      ? group.scheduledDeleteAt
-      : computeScheduledDeletionTime(group.settledAt, retentionOption);
-
-  const msRemaining = scheduledDeleteAt - nowMs;
-  const daysRemaining = Math.max(0, Math.ceil(msRemaining / (24 * 60 * 60 * 1000)));
-  const scheduledDateFormatted = new Date(scheduledDeleteAt).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  });
-
-  return {
-    isSettled: true,
-    isKept: false,
-    isExpired: msRemaining <= 0,
-    retentionOption,
-    retentionLabel,
-    scheduledDeleteAt,
-    scheduledDateFormatted,
-    daysRemaining,
-    remainingDays: daysRemaining,
-  };
+  return nowMs - settledAtMs >= durationMs;
 }

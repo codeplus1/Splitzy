@@ -1,22 +1,22 @@
 {
-  "name": "splitze-functions",
-  "private": true,
+  "name": "splitzy-cloud-functions",
   "version": "1.0.0",
-  "description": "Server-side scheduled Firebase Cloud Functions for Splitze automatic post-settlement group cleanup",
+  "description": "Firebase Cloud Functions for periodic cleanup of settled Splitzy groups, subcollections, associated documents, and stored receipts",
   "main": "lib/index.js",
   "scripts": {
     "build": "tsc",
-    "serve": "npm run build && firebase emulators:start --only functions,firestore,storage",
+    "serve": "npm run build && firebase emulators:start --only functions",
     "deploy": "firebase deploy --only functions"
   },
   "engines": {
     "node": "20"
   },
   "dependencies": {
-    "firebase-admin": "^12.6.0",
-    "firebase-functions": "^6.1.0"
+    "firebase-admin": "^12.5.0",
+    "firebase-functions": "^6.0.1"
   },
   "devDependencies": {
-    "typescript": "~5.8.2"
-  }
+    "typescript": "^5.6.3"
+  },
+  "private": true
 }

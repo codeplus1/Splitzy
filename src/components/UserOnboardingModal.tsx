@@ -1102,12 +1102,12 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                         ? 'Supprimer définitivement votre compte et libérer votre @username ?'
                         : 'Permanently delete your account and release your @username?'}
                     </p>
-                    <div className="flex items-center justify-end gap-2">
+                    <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2">
                       <button
                         type="button"
                         disabled={isDeleting}
                         onClick={() => setShowDeleteConfirm(false)}
-                        className="ui-btn ui-btn-secondary py-1 px-2.5 text-xs"
+                        className="ui-btn ui-btn-secondary w-full sm:w-auto py-1.5 px-2.5 text-xs justify-center"
                       >
                         {isFrench ? 'Annuler' : 'Cancel'}
                       </button>
@@ -1123,10 +1123,10 @@ export const UserOnboardingModal: React.FC<UserOnboardingModalProps> = ({
                             setIsDeleting(false);
                           }
                         }}
-                        className="ui-btn ui-btn-danger py-1 px-3 text-xs"
+                        className="ui-btn ui-btn-danger w-full sm:w-auto py-1.5 px-3 text-xs justify-center"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>
+                        <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">
                           {isDeleting
                             ? isFrench
                               ? 'Suppression...'

@@ -16,6 +16,9 @@
           "items": { "type": "string" }
         },
         "inviteCode": { "type": "string" },
+        "settled": { "type": "boolean" },
+        "settledAt": { "type": "string" },
+        "retentionPeriod": { "type": "string" },
         "createdAt": { "type": "string" }
       },
       "required": ["id", "name", "baseCurrency"]

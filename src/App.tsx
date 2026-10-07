@@ -52,6 +52,11 @@ import {
   calculateMemberBalances,
   optimizeSettlements,
 } from './core/calculation';
+import {
+  computeGroupSettlementState,
+  isSettledGroupExpired,
+  DEFAULT_RETENTION_PERIOD,
+} from './core/retention';
 import { Header } from './components/Header';
 import { Dashboard } from './components/Dashboard';
 import { GroupDetail } from './components/GroupDetail';
@@ -406,6 +411,136 @@ export default function App() {
       unsubscribe();
     };
   }, [currentUser, isUserLoggedIn]);
+
+  // Automatically keep each group's `settled` and `settledAt` metadata synchronized in state and Firestore,
+  // and execute automatic retention cleanup if a settled group has exceeded its configured retention period
+  useEffect(() => {
+    if (!currentUser || !isUserLoggedIn || appState.groups.length === 0) return;
+
+    const nowMs = Date.now();
+    const nowISO = new Date(nowMs).toISOString();
+    let stateChanged = false;
+    const updatedGroups: Group[] = [];
+    const groupsToSyncToCloud: Group[] = [];
+    const expiredGroupsToPurge: Group[] = [];
+
+    for (const grp of appState.groups) {
+      const grpGms = appState.groupMembers.filter(gm => gm.groupId === grp.id);
+      const grpMemIds = new Set(grpGms.map(gm => gm.memberId));
+      const grpMembers = appState.members.filter(m => grpMemIds.has(m.id));
+      const grpExpenses = appState.expenses.filter(e => e.groupId === grp.id);
+      const grpExpIds = new Set(grpExpenses.map(e => e.id));
+      const grpShares = appState.expenseShares.filter(s => grpExpIds.has(s.expenseId));
+      const grpSettlements = appState.settlements.filter(s => s.groupId === grp.id);
+
+      const computed = computeGroupSettlementState(
+        grp,
+        grpMembers,
+        grpExpenses,
+        grpShares,
+        grpSettlements,
+        nowISO
+      );
+
+      const candidateGroup: Group = {
+        ...grp,
+        settled: computed.settled,
+        settledAt: computed.settled ? computed.settledAt || null : null,
+        retentionPeriod: computed.retentionPeriod,
+      };
+
+      if (isSettledGroupExpired(candidateGroup, nowMs)) {
+        expiredGroupsToPurge.push(candidateGroup);
+        stateChanged = true;
+        continue;
+      }
+
+      if (
+        Boolean(grp.settled) !== computed.settled ||
+        (grp.settledAt || null) !== (candidateGroup.settledAt || null) ||
+        (grp.retentionPeriod || DEFAULT_RETENTION_PERIOD) !== computed.retentionPeriod
+      ) {
+        stateChanged = true;
+        groupsToSyncToCloud.push(candidateGroup);
+      }
+
+      updatedGroups.push(candidateGroup);
+    }
+
+    if (expiredGroupsToPurge.length > 0) {
+      for (const expGrp of expiredGroupsToPurge) {
+        const gExpenses = appState.expenses.filter(e => e.groupId === expGrp.id);
+        const gExpIds = new Set(gExpenses.map(e => e.id));
+        const gShares = appState.expenseShares.filter(s => gExpIds.has(s.expenseId));
+        const gSettlements = appState.settlements.filter(s => s.groupId === expGrp.id);
+        const gMemberships = appState.groupMembers.filter(gm => gm.groupId === expGrp.id);
+        cloudDeleteGroup(
+          expGrp.id,
+          gExpenses,
+          gShares,
+          gSettlements,
+          gMemberships,
+          expGrp.inviteCode
+        );
+      }
+    }
+
+    if (groupsToSyncToCloud.length > 0) {
+      for (const gToSync of groupsToSyncToCloud) {
+        cloudUpdateGroup(
+          gToSync.id,
+          {
+            settled: gToSync.settled,
+            settledAt: gToSync.settledAt ?? null,
+            retentionPeriod: gToSync.retentionPeriod,
+          },
+          gToSync
+        );
+      }
+    }
+
+    if (stateChanged) {
+      const purgedIds = new Set(expiredGroupsToPurge.map(g => g.id));
+      const purgedExpIds = new Set(
+        appState.expenses.filter(e => purgedIds.has(e.groupId)).map(e => e.id)
+      );
+      setAppState(prev => ({
+        ...prev,
+        groups: updatedGroups,
+        expenses:
+          purgedIds.size > 0
+            ? prev.expenses.filter(e => !purgedIds.has(e.groupId))
+            : prev.expenses,
+        expenseShares:
+          purgedExpIds.size > 0
+            ? prev.expenseShares.filter(s => !purgedExpIds.has(s.expenseId))
+            : prev.expenseShares,
+        settlements:
+          purgedIds.size > 0
+            ? prev.settlements.filter(s => !purgedIds.has(s.groupId))
+            : prev.settlements,
+        groupMembers:
+          purgedIds.size > 0
+            ? prev.groupMembers.filter(gm => !purgedIds.has(gm.groupId))
+            : prev.groupMembers,
+        deletedGroupIds:
+          purgedIds.size > 0
+            ? Array.from(new Set([...(prev.deletedGroupIds || []), ...Array.from(purgedIds)]))
+            : prev.deletedGroupIds,
+      }));
+      if (activeGroupId && purgedIds.has(activeGroupId)) {
+        setActiveGroupId(null);
+      }
+    }
+  }, [
+    currentUser,
+    isUserLoggedIn,
+    appState.groups,
+    appState.expenses,
+    appState.expenseShares,
+    appState.settlements,
+    appState.groupMembers,
+  ]);
 
   // Automatic background cloud sync whenever there are pending changes and the device is online
   useEffect(() => {

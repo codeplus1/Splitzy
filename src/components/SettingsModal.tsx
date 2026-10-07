@@ -746,7 +746,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       autoFocus
                     />
 
-                    <div className="flex items-center justify-end gap-2">
+                    <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2">
                       <button
                         type="button"
                         disabled={isDeletingAccount}
@@ -754,7 +754,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           setIsConfirmingDeleteAccount(false);
                           setDeleteConfirmText('');
                         }}
-                        className="ui-btn ui-btn-secondary py-1.5 px-3 text-xs"
+                        className="ui-btn ui-btn-secondary w-full sm:w-auto py-2 sm:py-1.5 px-3 text-xs justify-center"
                       >
                         {language === 'fr' ? 'Annuler' : 'Cancel'}
                       </button>
@@ -776,10 +776,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             setIsDeletingAccount(false);
                           }
                         }}
-                        className="ui-btn ui-btn-danger py-1.5 px-3.5 text-xs disabled:opacity-50"
+                        className="ui-btn ui-btn-danger w-full sm:w-auto py-2 sm:py-1.5 px-3.5 text-xs disabled:opacity-50 justify-center"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        <span>
+                        <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">
                           {isDeletingAccount
                             ? language === 'fr'
                               ? 'Suppression...'

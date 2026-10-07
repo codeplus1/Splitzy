@@ -21,6 +21,8 @@ export interface Member {
   createdAt: string;
 }
 
+export type RetentionPeriod = '3d' | '15d' | '1m' | 'never';
+
 export interface Group {
   id: string;
   name: string;
@@ -32,6 +34,9 @@ export interface Group {
   memberUserIds?: string[];
   inviteCode?: string;
   reviewNewMembers?: boolean;
+  settled?: boolean; // True when all balances in the group are settled
+  settledAt?: string | null; // ISO timestamp when the group became fully settled
+  retentionPeriod?: RetentionPeriod; // Configured auto-delete retention ('3d' | '15d' | '1m' | 'never')
 }
 
 export interface GroupMember {
@@ -78,6 +83,7 @@ export interface Expense {
   category?: string;
   notes?: string;
   receiptUrl?: string; // base64 data URL or uploaded image/pdf
+  receiptStoragePath?: string; // Firebase Storage path for cloud receipt cleanup
   receiptName?: string;
   lineItems?: ExpenseLineItem[];
   isRecurring?: boolean;

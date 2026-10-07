@@ -231,6 +231,9 @@ function isOwnerGroupUpdate(
     'memberUserIds',
     'inviteCode',
     'reviewNewMembers',
+    'settled',
+    'settledAt',
+    'retentionPeriod',
   ]);
   const affected = getAffectedKeys(existing, incoming);
   return affected.every(k => allowed.has(k));
