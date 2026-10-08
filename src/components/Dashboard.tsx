@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Users,
   Plus,
@@ -8,8 +8,9 @@ import {
   ArrowRight,
   KeyRound,
   Check,
-  Pencil,
   Clock,
+  Search,
+  X,
 } from 'lucide-react';
 import { Group, Member, GroupMember, Expense, ExpenseShare, SettlementRecord, SupportedLanguage } from '../types';
 import { translate } from '../core/i18n';
@@ -49,6 +50,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
   language,
 }) => {
   const isFrench = language === 'fr';
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const filteredGroups = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return groups;
+    return groups.filter(group => group.name.toLowerCase().includes(query));
+  }, [groups, searchQuery]);
 
   const currentMember = members.find(m => m.id === currentUserId) || members[0] || {
     id: 'user_1',
@@ -296,7 +304,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               {translate(language, 'activeGroups')}
             </h2>
             <span className="px-2 py-0.5 rounded-full bg-[var(--surface-subtle)] border border-[var(--border)] text-[11px] font-bold font-mono text-[var(--ink)] flex items-center justify-center shrink-0">
-              {groups.length}
+              {searchQuery.trim() ? `${filteredGroups.length}/${groups.length}` : groups.length}
             </span>
           </div>
 
@@ -324,9 +332,67 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
 
+        {/* Global Group Search Bar */}
+        <div className="flex items-center gap-2.5 w-full px-3.5 py-2.5 rounded-xl bg-[var(--surface)] border border-[var(--border)] hover:border-[var(--border-strong)] focus-within:border-[var(--brand-navy)] dark:focus-within:border-[var(--brand-mint)] focus-within:ring-3 focus-within:ring-[#63E6BE]/25 shadow-[var(--shadow-xs)] transition-all">
+          <Search
+            aria-hidden="true"
+            className="w-4 h-4 text-[var(--ink-muted)] shrink-0 pointer-events-none"
+          />
+          <input
+            id="dashboard-group-search-input"
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder={
+              isFrench
+                ? 'Rechercher un groupe par nom...'
+                : 'Search groups by name...'
+            }
+            aria-label={isFrench ? 'Rechercher un groupe par nom' : 'Search groups by name'}
+            className="w-full bg-transparent border-0 p-0 text-xs sm:text-sm text-[var(--ink)] placeholder:text-[var(--ink-muted)] focus:outline-none focus:ring-0"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              aria-label={isFrench ? 'Effacer la recherche' : 'Clear search'}
+              title={isFrench ? 'Effacer la recherche' : 'Clear search'}
+              className="p-1 -mr-1 rounded-lg text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-subtle)] transition-colors cursor-pointer shrink-0"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
         {/* Groups List / Grid */}
+        {filteredGroups.length === 0 ? (
+          <div className="ui-card p-8 text-center space-y-2.5">
+            <div className="w-10 h-10 rounded-full bg-[var(--surface-subtle)] border border-[var(--border)] flex items-center justify-center mx-auto text-[var(--ink-muted)]">
+              <Search className="w-4 h-4" />
+            </div>
+            <p className="text-sm font-semibold text-[var(--ink)]">
+              {isFrench
+                ? `Aucun groupe trouvé pour « ${searchQuery.trim()} »`
+                : `No groups found matching "${searchQuery.trim()}"`}
+            </p>
+            <p className="text-xs text-[var(--ink-secondary)]">
+              {isFrench
+                ? 'Essayez un autre nom ou effacez le filtre de recherche.'
+                : 'Try searching for a different group name or clear the search filter.'}
+            </p>
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="ui-btn-secondary px-3.5 py-1.5 text-xs"
+              >
+                {isFrench ? 'Effacer la recherche' : 'Clear search'}
+              </button>
+            </div>
+          </div>
+        ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {groups.map(group => {
+          {filteredGroups.map(group => {
             const currentGroupMemberIds = groupMembers
               .filter(gm => gm.groupId === group.id)
               .map(gm => gm.memberId);
@@ -458,6 +524,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
             );
           })}
         </div>
+        )}
       </div>
     </div>
   );

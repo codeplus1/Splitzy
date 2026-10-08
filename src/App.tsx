@@ -61,6 +61,7 @@ import { Header } from './components/Header';
 import { Dashboard } from './components/Dashboard';
 import { ToastContainer, ToastMessage } from './components/Toast';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { SplashScreen } from './components/SplashScreen';
 import {
   AppLockScreen,
   isAppLockEnabled,
@@ -143,6 +144,7 @@ export default function App() {
     const hasUser = Boolean(appState.userProfile || appState.members.length > 0);
     return hasUser && isAppLockEnabled();
   });
+  const [showSplashScreen, setShowSplashScreen] = useState<boolean>(true);
   const [appLockConfigVersion, setAppLockConfigVersion] = useState(0);
 
   // Listen for PIN / Auto-lock preference changes from Settings
@@ -1771,6 +1773,10 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)] transition-colors flex flex-col font-sans">
+      {showSplashScreen && (
+        <SplashScreen onFinish={() => setShowSplashScreen(false)} />
+      )}
+
       {isAppLocked && (
         <AppLockScreen
           onUnlock={() => setIsAppLocked(false)}
