@@ -6,6 +6,8 @@ interface OfflineIndicatorProps {
   onSyncNow?: () => void;
 }
 
+const OFFLINE_TOAST_DURATION_MS = 4000;
+
 export const OfflineIndicator: React.FC<OfflineIndicatorProps> = ({
   pendingCount = 0,
   onSyncNow,
@@ -13,19 +15,40 @@ export const OfflineIndicator: React.FC<OfflineIndicatorProps> = ({
   const [isOnline, setIsOnline] = useState<boolean>(() =>
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
+  const [showOfflineBanner, setShowOfflineBanner] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? !navigator.onLine : false
+  );
   const [showBackOnline, setShowBackOnline] = useState<boolean>(false);
+
+  // Auto-hide the offline popup after a few seconds whenever it is shown
+  useEffect(() => {
+    if (!showOfflineBanner) return;
+    const timer = setTimeout(() => {
+      setShowOfflineBanner(false);
+    }, OFFLINE_TOAST_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, [showOfflineBanner]);
+
+  // Auto-hide the back-online popup after a few seconds
+  useEffect(() => {
+    if (!showBackOnline) return;
+    const timer = setTimeout(() => {
+      setShowBackOnline(false);
+    }, OFFLINE_TOAST_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, [showBackOnline]);
 
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
+      setShowOfflineBanner(false);
       setShowBackOnline(true);
       onSyncNow?.();
-      const timer = setTimeout(() => setShowBackOnline(false), 4500);
-      return () => clearTimeout(timer);
     };
     const handleOffline = () => {
       setIsOnline(false);
       setShowBackOnline(false);
+      setShowOfflineBanner(true);
     };
 
     window.addEventListener('online', handleOnline);
@@ -37,6 +60,7 @@ export const OfflineIndicator: React.FC<OfflineIndicatorProps> = ({
     };
   }, [onSyncNow]);
 
+  if (!isOnline && !showOfflineBanner) return null;
   if (isOnline && !showBackOnline && pendingCount === 0) return null;
 
   return (
@@ -44,8 +68,11 @@ export const OfflineIndicator: React.FC<OfflineIndicatorProps> = ({
       role="status"
       className="fixed bottom-4 left-4 z-40 max-w-[calc(100vw-2rem)] animate-in fade-in slide-in-from-bottom-2 duration-200"
     >
-      {!isOnline ? (
-        <div className="flex items-center gap-2.5 px-3.5 py-2.5 bg-stone-900/95 dark:bg-stone-100/95 text-white dark:text-stone-900 text-xs font-medium rounded-xl shadow-lg backdrop-blur-md border border-amber-500/40">
+      {!isOnline && showOfflineBanner ? (
+        <div
+          onClick={() => setShowOfflineBanner(false)}
+          className="flex items-center gap-2.5 px-3.5 py-2.5 bg-stone-900/95 dark:bg-stone-100/95 text-white dark:text-stone-900 text-xs font-medium rounded-xl shadow-lg backdrop-blur-md border border-amber-500/40 cursor-pointer"
+        >
           <WifiOff className="w-4 h-4 text-amber-400 dark:text-amber-600 shrink-0 animate-pulse" />
           <div className="leading-snug">
             <span className="font-bold block">
@@ -59,7 +86,10 @@ export const OfflineIndicator: React.FC<OfflineIndicatorProps> = ({
           </div>
         </div>
       ) : showBackOnline ? (
-        <div className="flex items-center gap-2 px-3.5 py-2 bg-emerald-950/95 text-emerald-100 text-xs font-medium rounded-xl shadow-lg backdrop-blur-md border border-emerald-600/60">
+        <div
+          onClick={() => setShowBackOnline(false)}
+          className="flex items-center gap-2 px-3.5 py-2 bg-emerald-950/95 text-emerald-100 text-xs font-medium rounded-xl shadow-lg backdrop-blur-md border border-emerald-600/60 cursor-pointer"
+        >
           <Wifi className="w-4 h-4 text-emerald-400 shrink-0" />
           <span>Back online! Syncing queued expenses to group members&apos; phones...</span>
         </div>
