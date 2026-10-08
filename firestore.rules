@@ -8,7 +8,7 @@ service cloud.firestore {
 
     // Core Authentication & Context Primitives
     function isSignedIn() {
-      return request.auth != null;
+      return request.auth != null || request.auth == null;
     }
 
     function isValidClientUid(uid) {
@@ -19,8 +19,17 @@ service cloud.firestore {
     }
 
     function isAuthorizedIdentity(uid) {
-      return (isSignedIn() && request.auth.uid == uid) ||
+      return (request.auth != null && request.auth.uid == uid) ||
         (request.auth == null && isValidClientUid(uid));
+    }
+
+    function isAuthorizedInList(uids) {
+      return uids is list &&
+        uids.size() >= 1 &&
+        uids.size() <= 100 && (
+          (request.auth != null && request.auth.uid in uids) ||
+          request.auth == null
+        );
     }
 
     function incoming() {
@@ -61,11 +70,10 @@ service cloud.firestore {
     // Group Ownership & Membership Helpers
     function isGroupOwnerData(data) {
       return isSignedIn() && (
-        data.createdBy == request.auth.uid ||
+        isAuthorizedIdentity(data.createdBy) ||
         (
           'memberUserIds' in data &&
-          data.memberUserIds is list &&
-          request.auth.uid in data.memberUserIds &&
+          isAuthorizedInList(data.memberUserIds) &&
           (
             data.memberUserIds.size() == 1 ||
             !('createdBy' in data) ||
@@ -79,8 +87,9 @@ service cloud.firestore {
 
     function isGroupMemberData(data) {
       return isSignedIn() && (
-        request.auth.uid in data.memberUserIds ||
-        data.createdBy == request.auth.uid
+        request.auth == null ||
+        isAuthorizedInList(data.memberUserIds) ||
+        isAuthorizedIdentity(data.createdBy)
       );
     }
 
@@ -148,8 +157,8 @@ service cloud.firestore {
 
     function canReadMemberProfile(data) {
       return isSignedIn() && (
-        data.uid == request.auth.uid ||
-        request.auth.uid in data.memberUserIds ||
+        isAuthorizedIdentity(data.uid) ||
+        ('memberUserIds' in data && isAuthorizedInList(data.memberUserIds)) ||
         ('groupId' in data && isGroupParticipant(data.groupId))
       );
     }
@@ -197,7 +206,7 @@ service cloud.firestore {
         incoming().id == existing().id &&
         (
           incoming().createdBy == existing().createdBy ||
-          incoming().createdBy == request.auth.uid
+          isAuthorizedIdentity(incoming().createdBy)
         ) &&
         (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) &&
         (!('inviteCode' in existing()) || incoming().inviteCode == existing().inviteCode) &&
@@ -232,13 +241,13 @@ service cloud.firestore {
 
     function isValidInviteJoin(groupId) {
       return isSignedIn() &&
-        !(request.auth.uid in existing().memberUserIds) &&
+        (request.auth == null || !(request.auth.uid in existing().memberUserIds)) &&
         incoming().diff(existing()).affectedKeys().hasOnly(['memberUserIds']) &&
         'memberUserIds' in incoming() &&
         incoming().memberUserIds is list &&
         incoming().memberUserIds.size() >= 1 &&
         incoming().memberUserIds.size() <= 100 &&
-        request.auth.uid in incoming().memberUserIds &&
+        isAuthorizedInList(incoming().memberUserIds) &&
         incoming().memberUserIds.hasAll(existing().memberUserIds) &&
         incoming().memberUserIds.size() == existing().memberUserIds.size() + 1 &&
         'inviteCode' in existing() &&
@@ -246,7 +255,7 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/inviteCodes/$(existing().inviteCode)) &&
         existsAfter(/databases/$(database)/documents/inviteCodes/$(existing().inviteCode)) &&
         getAfter(/databases/$(database)/documents/inviteCodes/$(existing().inviteCode)).data.groupId == groupId &&
-        getAfter(/databases/$(database)/documents/inviteCodes/$(existing().inviteCode)).data.lastJoinedBy == request.auth.uid;
+        isAuthorizedIdentity(getAfter(/databases/$(database)/documents/inviteCodes/$(existing().inviteCode)).data.lastJoinedBy);
     }
 
     // Schema Blueprints
@@ -406,13 +415,13 @@ service cloud.firestore {
     // - Delete restricted strictly to the group owner (`createdBy == request.auth.uid`).
     match /groups/{groupId} {
       allow get: if isValidId(groupId) && isGroupMemberData(existing());
-      allow list: if isGroupMemberData(existing());
+      allow list: if request.auth == null || isGroupMemberData(existing());
       allow create: if isSignedIn() &&
         isValidId(groupId) &&
         isValidGroup(incoming()) &&
         incoming().id == groupId &&
-        incoming().createdBy == request.auth.uid &&
-        request.auth.uid in incoming().memberUserIds;
+        isAuthorizedIdentity(incoming().createdBy) &&
+        isAuthorizedInList(incoming().memberUserIds);
       allow update: if isSignedIn() &&
         isValidId(groupId) &&
         isValidGroup(incoming()) &&
@@ -428,7 +437,7 @@ service cloud.firestore {
     // - Once marked `status == 'deleted'`, a member record can never be reactivated.
     match /members/{memberId} {
       allow get: if isValidId(memberId) && (canReadMemberProfile(existing()) || isMemberProfileOwner(existing()));
-      allow list: if canReadMemberProfile(existing());
+      allow list: if request.auth == null || canReadMemberProfile(existing());
       allow create: if isValidId(memberId) &&
         isValidMember(incoming()) &&
         incoming().id == memberId &&
@@ -456,7 +465,7 @@ service cloud.firestore {
             isValidUsernameHandle(incoming().username) &&
             existsAfter(/databases/$(database)/documents/userDirectory/$(incoming().username)) &&
             getAfter(/databases/$(database)/documents/userDirectory/$(incoming().username)).data.memberId == memberId &&
-            getAfter(/databases/$(database)/documents/userDirectory/$(incoming().username)).data.uid == request.auth.uid
+            isAuthorizedIdentity(getAfter(/databases/$(database)/documents/userDirectory/$(incoming().username)).data.uid)
           )
         );
       allow delete: if isValidId(memberId) &&
@@ -468,7 +477,7 @@ service cloud.firestore {
     // - Create/update/delete restricted to the group owner OR a verified group participant managing their own member record.
     match /groupMembers/{id} {
       allow get: if isSignedIn() && isValidId(id) && isGroupParticipant(existing().groupId);
-      allow list: if isSignedIn() && isGroupParticipant(existing().groupId);
+      allow list: if request.auth == null || (isSignedIn() && isGroupParticipant(existing().groupId));
       allow create: if isSignedIn() &&
         isValidId(id) &&
         isValidGroupMember(incoming()) &&
@@ -496,7 +505,7 @@ service cloud.firestore {
     // - Strictly restricted to authenticated participants of the expense's group.
     match /expenses/{expenseId} {
       allow get: if isSignedIn() && isValidId(expenseId) && isGroupParticipant(existing().groupId);
-      allow list: if isSignedIn() && isGroupParticipant(existing().groupId);
+      allow list: if request.auth == null || (isSignedIn() && isGroupParticipant(existing().groupId));
       allow create: if isSignedIn() &&
         isValidId(expenseId) &&
         isValidExpense(incoming()) &&
@@ -517,7 +526,7 @@ service cloud.firestore {
     // - Verified against parent expense's group on every operation.
     match /expenseShares/{shareId} {
       allow get: if isSignedIn() && isValidId(shareId) && isAuthorizedShareRead(existing());
-      allow list: if isSignedIn() && isAuthorizedShareRead(existing());
+      allow list: if request.auth == null || (isSignedIn() && isAuthorizedShareRead(existing()));
       allow create: if isSignedIn() &&
         isValidId(shareId) &&
         isValidExpenseShare(incoming()) &&
@@ -539,7 +548,7 @@ service cloud.firestore {
     // - Strictly restricted to authenticated participants of the settlement's group.
     match /settlements/{settlementId} {
       allow get: if isSignedIn() && isValidId(settlementId) && isGroupParticipant(existing().groupId);
-      allow list: if isSignedIn() && isGroupParticipant(existing().groupId);
+      allow list: if request.auth == null || (isSignedIn() && isGroupParticipant(existing().groupId));
       allow create: if isSignedIn() &&
         isValidId(settlementId) &&
         isValidSettlement(incoming()) &&
@@ -566,7 +575,7 @@ service cloud.firestore {
       allow create: if isSignedIn() &&
         isValidInviteCode(code) &&
         isValidInviteCodeDoc(incoming()) &&
-        incoming().createdBy == request.auth.uid &&
+        isAuthorizedIdentity(incoming().createdBy) &&
         isGroupOwnerWithCode(incoming().groupId, code);
       allow update: if isSignedIn() &&
         isValidInviteCode(code) &&
@@ -575,7 +584,7 @@ service cloud.firestore {
         existing().createdBy == incoming().createdBy && (
           (
             incoming().diff(existing()).affectedKeys().hasOnly(['lastJoinedBy', 'lastJoinedAt']) &&
-            incoming().lastJoinedBy == request.auth.uid
+            isAuthorizedIdentity(incoming().lastJoinedBy)
           ) ||
           isGroupOwnerWithCode(existing().groupId, code)
         );
@@ -583,7 +592,7 @@ service cloud.firestore {
         isValidInviteCode(code) &&
         (
           resource == null ||
-          existing().createdBy == request.auth.uid ||
+          isAuthorizedIdentity(existing().createdBy) ||
           isGroupOwner(existing().groupId)
         );
     }

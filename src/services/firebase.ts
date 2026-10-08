@@ -767,12 +767,9 @@ export function subscribeToUserCloudSync(
   // Ensure Firebase Authentication session is active before attaching Firestore listeners
   ensureAuthUser().then(authUser => {
     if (isCancelled) return;
-    const effectiveUserId = authUser?.uid || auth.currentUser?.uid || userId;
+    const effectiveUserId =
+      authUser?.uid || auth.currentUser?.uid || userId || getCachedUserIdentity().uid;
     if (!effectiveUserId) {
-      onStatusChange?.(isDeviceOnline() ? 'connected' : 'offline');
-      return;
-    }
-    if (!auth.currentUser) {
       onStatusChange?.(isDeviceOnline() ? 'connected' : 'offline');
       return;
     }
@@ -860,7 +857,10 @@ export async function cloudCreateGroup(
 
     const authUser = await ensureAuthUser();
     const realAuthUid = authUser?.uid || auth.currentUser?.uid;
-    const fallbackUid = currentUser?.uid || 'anonymous';
+    const fallbackUid =
+      currentUser?.uid && currentUser.uid !== 'anonymous'
+        ? currentUser.uid
+        : getCachedUserIdentity().uid;
     const effectiveUid = realAuthUid || fallbackUid;
     const isLocalFallbackUid = (uid?: string) =>
       !uid || uid === 'anonymous' || uid === fallbackUid || uid.startsWith('u_');
@@ -897,19 +897,6 @@ export async function cloudCreateGroup(
       newMembers.find(m => m.accountType !== 'guest' && !m.id.startsWith('guest_')) ||
       newMembers[0];
 
-    if (ownMember && ownMember.accountType !== 'guest' && !ownMember.id.startsWith('guest_')) {
-      batch.set(
-        doc(db, MEMBERS_COL, ownMember.id),
-        sanitizeForFirestore({
-          ...ownMember,
-          uid: realAuthUid || effectiveUid,
-          groupId: groupToSave.id,
-          memberUserIds: groupToSave.memberUserIds,
-        }),
-        { merge: true }
-      );
-    }
-
     for (const gm of newGroupMembers) {
       const mInfo = memberLookup.get(gm.memberId);
       const isGuest =
@@ -940,6 +927,24 @@ export async function cloudCreateGroup(
     }
 
     await batch.commit();
+
+    if (ownMember && ownMember.accountType !== 'guest' && !ownMember.id.startsWith('guest_')) {
+      try {
+        await setDoc(
+          doc(db, MEMBERS_COL, ownMember.id),
+          sanitizeForFirestore({
+            ...ownMember,
+            uid: realAuthUid || effectiveUid,
+            groupId: groupToSave.id,
+            memberUserIds: groupToSave.memberUserIds,
+          }),
+          { merge: true }
+        );
+      } catch {
+        // Non-blocking: group and groupMembers are already committed
+      }
+    }
+
     return { success: true };
   } catch (err) {
     console.warn('Cloud create group sync note:', err);

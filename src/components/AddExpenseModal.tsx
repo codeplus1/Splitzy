@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   X,
   Plus,
@@ -12,7 +12,6 @@ import {
   Paperclip,
   Repeat,
   Sparkles,
-  RefreshCw,
 } from 'lucide-react';
 import {
   Expense,
@@ -27,9 +26,6 @@ import { translate } from '../core/i18n';
 import { MemberAvatar } from './MemberAvatar';
 import { DatePickerBSAD } from './DatePickerBSAD';
 import {
-  SUPPORTED_CURRENCIES,
-  getDefaultExchangeRate,
-  fetchLiveExchangeRate,
   formatMoney,
   getCurrencySymbol,
 } from '../core/currency';
@@ -82,20 +78,10 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
   // Form State
   const [title, setTitle] = useState(expenseToEdit?.expense.title || '');
   const [originalAmountStr, setOriginalAmountStr] = useState(
-    expenseToEdit ? String(expenseToEdit.expense.originalAmount) : ''
+    expenseToEdit ? String(expenseToEdit.expense.baseAmount ?? expenseToEdit.expense.originalAmount) : ''
   );
-  const [currency, setCurrency] = useState(expenseToEdit?.expense.originalCurrency || group.baseCurrency);
-  const [exchangeRate, setExchangeRate] = useState<number>(
-    expenseToEdit?.expense.exchangeRate || getDefaultExchangeRate(expenseToEdit?.expense.originalCurrency || group.baseCurrency, group.baseCurrency)
-  );
-  const [exchangeRateStr, setExchangeRateStr] = useState<string>(
-    String(
-      expenseToEdit?.expense.exchangeRate ||
-        getDefaultExchangeRate(expenseToEdit?.expense.originalCurrency || group.baseCurrency, group.baseCurrency)
-    )
-  );
-  const [isCustomRate, setIsCustomRate] = useState(Boolean(expenseToEdit));
-  const [isFetchingLiveRate, setIsFetchingLiveRate] = useState(false);
+  const currency = group.baseCurrency;
+  const exchangeRate = 1;
   const [paidBy, setPaidBy] = useState(
     expenseToEdit?.expense.paidBy || members[0]?.id || ''
   );
@@ -191,47 +177,6 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
   const [newItemAmount, setNewItemAmount] = useState('');
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  // Auto update exchange rate when currency changes
-  useEffect(() => {
-    if (!isCustomRate) {
-      const suggested = getDefaultExchangeRate(currency, group.baseCurrency);
-      setExchangeRate(suggested);
-      setExchangeRateStr(String(suggested));
-      if (currency !== group.baseCurrency) {
-        let cancelled = false;
-        setIsFetchingLiveRate(true);
-        fetchLiveExchangeRate(currency, group.baseCurrency)
-          .then(({ rate }) => {
-            if (!cancelled && rate > 0) {
-              setExchangeRate(rate);
-              setExchangeRateStr(String(rate));
-            }
-          })
-          .finally(() => {
-            if (!cancelled) setIsFetchingLiveRate(false);
-          });
-        return () => {
-          cancelled = true;
-        };
-      }
-    }
-  }, [currency, group.baseCurrency, isCustomRate]);
-
-  const handleFetchLiveRate = async () => {
-    if (currency === group.baseCurrency) return;
-    setIsFetchingLiveRate(true);
-    try {
-      const { rate } = await fetchLiveExchangeRate(currency, group.baseCurrency);
-      if (rate > 0) {
-        setIsCustomRate(false);
-        setExchangeRate(rate);
-        setExchangeRateStr(String(rate));
-      }
-    } finally {
-      setIsFetchingLiveRate(false);
-    }
-  };
 
   const handleProcessFile = async (file: File) => {
     setIsProcessingReceipt(true);
@@ -570,102 +515,21 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
             </div>
           </div>
 
-          {/* Amount & Currency */}
-          <div className="ui-subcard p-3.5 space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-bold uppercase tracking-wider text-[var(--ink-secondary)]">
-                {translate(language, 'amount')} *
-              </label>
-              {currency !== group.baseCurrency && (
-                <span className="text-xs font-semibold text-[var(--accent)] tnum">
-                  ≈ {formatMoney(baseAmount, group.baseCurrency, language)} ({group.baseCurrency})
-                </span>
-              )}
-            </div>
-
-            <div className="flex items-center gap-2">
-              <div className="flex items-center grow rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] focus-within:border-[var(--accent)] focus-within:ring-3 focus-within:ring-[var(--accent)]/10 transition-all overflow-hidden">
-                <input
-                  id="expense-amount-input"
-                  type="number"
-                  step="any"
-                  required
-                  placeholder="0.00"
-                  value={originalAmountStr}
-                  onChange={e => setOriginalAmountStr(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-transparent text-lg font-bold text-[var(--ink)] tnum amount-val focus:outline-none"
-                />
-                <span className="px-3 py-2.5 text-xs font-mono font-bold text-[var(--ink-secondary)] bg-[var(--surface-subtle)] border-l border-[var(--border-subtle)] select-none shrink-0">
-                  {getCurrencySymbol(currency)}
-                </span>
-              </div>
-
-              <select
-                value={currency}
-                onChange={e => {
-                  setCurrency(e.target.value);
-                  setIsCustomRate(false);
-                }}
-                className="ui-input w-28 px-2.5 py-2.5 text-xs font-bold"
-              >
-                {SUPPORTED_CURRENCIES.map(c => (
-                  <option key={c.code} value={c.code}>
-                    {c.code} ({c.symbol})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Editable Exchange Rate Row (Manual override + Live Google/Market Rate Fetch) */}
-            {currency !== group.baseCurrency && (
-              <div className="pt-2 mt-1 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[var(--ink-secondary)]">
-                  <span>{translate(language, 'exchangeRate')}:</span>
-                  <span className="font-mono font-bold text-[var(--ink)]">
-                    1 {currency} =
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-1.5 ml-auto">
-                  <div className="flex items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] focus-within:border-[var(--accent)] focus-within:ring-2 focus-within:ring-[var(--accent)]/15 overflow-hidden">
-                    <input
-                      id="expense-exchange-rate-input"
-                      type="number"
-                      step="any"
-                      min="0.0001"
-                      value={exchangeRateStr}
-                      onChange={e => {
-                        const val = e.target.value;
-                        setExchangeRateStr(val);
-                        setIsCustomRate(true);
-                        const num = parseFloat(val);
-                        if (!isNaN(num) && num > 0) {
-                          setExchangeRate(num);
-                        }
-                      }}
-                      className="w-20 px-2 py-1 bg-transparent text-xs font-mono font-bold text-right text-[var(--ink)] tnum focus:outline-none"
-                      aria-label="Exchange rate"
-                    />
-                    <span className="px-2 py-1 text-[10px] font-mono font-bold text-[var(--ink-secondary)] bg-[var(--surface-subtle)] border-l border-[var(--border-subtle)] select-none">
-                      {group.baseCurrency}
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={handleFetchLiveRate}
-                    disabled={isFetchingLiveRate}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[var(--surface)] hover:bg-[var(--surface-hover)] text-[11px] font-semibold text-[var(--accent)] border border-[var(--border)] transition-all cursor-pointer shrink-0"
-                    title="Fetch latest live market / Google exchange rate"
-                  >
-                    <RefreshCw
-                      className={`w-3 h-3 ${isFetchingLiveRate ? 'animate-spin' : ''}`}
-                    />
-                    <span>{isFrench ? 'Taux en direct' : 'Live Rate'}</span>
-                  </button>
-                </div>
-              </div>
-            )}
+          {/* Amount */}
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-[var(--ink-secondary)]">
+              {translate(language, 'amount')} ({getCurrencySymbol(group.baseCurrency)}) *
+            </label>
+            <input
+              id="expense-amount-input"
+              type="number"
+              step="any"
+              required
+              placeholder="0.00"
+              value={originalAmountStr}
+              onChange={e => setOriginalAmountStr(e.target.value)}
+              className="ui-input"
+            />
           </div>
 
           {/* Paid By */}
