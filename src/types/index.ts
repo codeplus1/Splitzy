@@ -46,6 +46,7 @@ export interface GroupMember {
   id: string;
   groupId: string;
   memberId: string;
+  userId?: string | null;
   memberName?: string;
   memberUsername?: string;
   memberAvatar?: string;
@@ -67,12 +68,26 @@ const GUEST_COLORS = [
 ];
 
 /**
+ * Generates a unique participant ID for a guest member who does not have a Splitzy account.
+ */
+export function generateGuestId(): string {
+  const randomPart =
+    typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function'
+      ? Array.from(crypto.getRandomValues(new Uint8Array(6)))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('')
+      : Math.random().toString(36).substring(2, 10);
+  return `guest_${Date.now().toString(36)}_${randomPart}`;
+}
+
+/**
  * Determines whether a member record represents a guest participant (no Splitzy account required).
  */
 export function isGuestMember(member?: Partial<Member> | null): boolean {
   if (!member) return false;
   if (member.accountType === 'guest') return true;
   if (member.id && member.id.startsWith('guest_')) return true;
+  if (member.userId === null && !member.username && !member.uid) return true;
   if (!member.username && !member.uid && !member.isTemporary) return true;
   return false;
 }
@@ -83,8 +98,7 @@ export function isGuestMember(member?: Partial<Member> | null): boolean {
  */
 export function createGuestParticipant(name: string, groupId?: string, indexHint = 0): Member {
   const cleanName = name.trim();
-  const randomSuffix = Math.random().toString(36).substring(2, 8);
-  const id = `guest_${Date.now()}_${randomSuffix}`;
+  const id = generateGuestId();
   const hashSeed = cleanName
     .split('')
     .reduce((acc, ch) => acc + ch.charCodeAt(0), Math.max(0, indexHint));

@@ -34,7 +34,16 @@ import {
   isSettledGroupExpired,
   getGroupCleanupCountdownInfo,
 } from '../src/core/retention';
-import { Group, Member, Expense, ExpenseShare, SettlementRecord } from '../src/types';
+import {
+  Group,
+  Member,
+  Expense,
+  ExpenseShare,
+  SettlementRecord,
+  generateGuestId,
+  createGuestParticipant,
+  isGuestMember,
+} from '../src/types';
 
 function verifyVercelAndPwaReadiness() {
   const rootDir = process.cwd();
@@ -416,6 +425,51 @@ async function runRetentionAndCoreWorkflowTests(): Promise<void> {
   const countdownInfo = getGroupCleanupCountdownInfo(group15d, jan10 + 5 * dayMs);
   if (!countdownInfo.isCountdownActive || countdownInfo.remainingDays !== 10) {
     throw new Error('Expected 10 days remaining on 15-day retention after 5 days');
+  }
+
+  // 5. Verify guest participants (userId: null, accountType: 'guest') work in expense splitting and settlements without database existence checks
+  const guestId1 = generateGuestId();
+  const guestId2 = generateGuestId();
+  if (!guestId1.startsWith('guest_') || guestId1 === guestId2) {
+    throw new Error('generateGuestId must generate unique guest_ prefixed IDs');
+  }
+  const guestAbc = createGuestParticipant('Abc', group.id, 1);
+  const guestRahul = createGuestParticipant('Rahul', group.id, 2);
+  if (
+    guestAbc.userId !== null ||
+    guestAbc.uid !== null ||
+    guestAbc.accountType !== 'guest' ||
+    !isGuestMember(guestAbc)
+  ) {
+    throw new Error('createGuestParticipant must set userId: null, uid: null, and accountType: guest');
+  }
+  const mixedMembers: Member[] = [members[0], guestAbc, guestRahul];
+  const dinnerSplit = calculateEqualShares(300, mixedMembers.map(m => m.id));
+  const dinnerExp: Expense = {
+    id: 'exp_guest_dinner',
+    groupId: group.id,
+    title: 'Dinner',
+    originalAmount: 300,
+    originalCurrency: 'CAD',
+    exchangeRate: 1,
+    baseAmount: 300,
+    paidBy: guestAbc.id,
+    dateISO: '2026-01-11',
+    calendarType: 'AD',
+    createdAt: jan10ISO,
+  };
+  const dinnerShares: ExpenseShare[] = dinnerSplit.map(s => ({
+    id: `sh_${dinnerExp.id}_${s.memberId}`,
+    expenseId: dinnerExp.id,
+    groupId: group.id,
+    memberId: s.memberId,
+    shareAmount: s.shareAmount,
+    splitType: 'equal',
+  }));
+  const mixedBalances = calculateMemberBalances(mixedMembers, [dinnerExp], dinnerShares, []);
+  const mixedDebts = optimizeSettlements(mixedBalances, 'CAD');
+  if (mixedDebts.length !== 2 || mixedDebts.some(d => d.toMemberId !== guestAbc.id || d.amount !== 100)) {
+    throw new Error('Expected guest participant Abc to receive 100 from each of the other 2 participants');
   }
 }
 

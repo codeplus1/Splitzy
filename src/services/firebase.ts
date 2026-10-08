@@ -49,7 +49,11 @@ import {
   SettlementRecord,
   RecoveryRecord,
   UserSecurityProfile,
+  generateGuestId,
+  createGuestParticipant,
+  isGuestMember,
 } from '../types';
+export { generateGuestId, createGuestParticipant, isGuestMember };
 import {
   AppState,
   loadAppState,
@@ -666,16 +670,21 @@ export function subscribeToUserCloudSync(
         const memberMap = new Map<string, Member>();
         for (const gm of scopedGroupMembers) {
           if (gm.memberId && gm.memberName && !memberMap.has(gm.memberId)) {
+            const isGuest =
+              gm.accountType === 'guest' ||
+              gm.memberId.startsWith('guest_') ||
+              (gm.userId === null && !gm.memberUsername && !gm.memberUid) ||
+              (!gm.memberUsername && !gm.memberUid);
             memberMap.set(gm.memberId, {
               id: gm.memberId,
               name: gm.memberName,
-              username: gm.memberUsername,
+              username: isGuest ? undefined : gm.memberUsername,
               avatar: gm.memberAvatar || '🙂',
               color: gm.memberColor || '#087F5B',
-              uid: gm.memberUid ?? null,
-              userId: gm.memberUid ?? null,
-              accountType: gm.accountType || (gm.memberUsername ? 'registered' : 'guest'),
-              isTemporary: gm.accountType === 'guest' || !gm.memberUsername,
+              uid: isGuest ? null : gm.memberUid ?? gm.userId ?? null,
+              userId: isGuest ? null : gm.userId ?? gm.memberUid ?? null,
+              accountType: isGuest ? 'guest' : 'registered',
+              isTemporary: isGuest,
               groupId: gm.groupId,
               createdAt: new Date().toISOString(),
             });
@@ -685,7 +694,12 @@ export function subscribeToUserCloudSync(
         const registeredMemberIds = Array.from(
           new Set(
             scopedGroupMembers
-              .filter(gm => gm.accountType !== 'guest' && !gm.memberId.startsWith('guest_'))
+              .filter(
+                gm =>
+                  gm.accountType !== 'guest' &&
+                  !gm.memberId.startsWith('guest_') &&
+                  (Boolean(gm.memberUsername) || Boolean(gm.memberUid) || Boolean(gm.userId))
+              )
               .map(gm => gm.memberId)
           )
         ).slice(0, 30);
@@ -902,7 +916,8 @@ export async function cloudCreateGroup(
       const isGuest =
         gm.accountType === 'guest' ||
         mInfo?.accountType === 'guest' ||
-        gm.memberId.startsWith('guest_');
+        gm.memberId.startsWith('guest_') ||
+        isGuestMember(mInfo);
       const resolvedMemberUid = isGuest
         ? null
         : gm.memberId === ownMember?.id
@@ -911,11 +926,12 @@ export async function cloudCreateGroup(
         ? gm.memberUid
         : mInfo?.uid && !isLocalFallbackUid(mInfo.uid)
         ? mInfo.uid
-        : undefined;
+        : null;
       batch.set(
         doc(db, GROUP_MEMBERS_COL, gm.id),
         sanitizeForFirestore({
           ...gm,
+          userId: resolvedMemberUid,
           memberName: gm.memberName || mInfo?.name,
           memberUsername: isGuest ? undefined : gm.memberUsername || mInfo?.username,
           memberAvatar: gm.memberAvatar || mInfo?.avatar,
@@ -2543,7 +2559,8 @@ export async function cloudAddMember(
     const isGuest =
       member.accountType === 'guest' ||
       groupMember.accountType === 'guest' ||
-      member.id.startsWith('guest_');
+      member.id.startsWith('guest_') ||
+      isGuestMember(member);
 
     // Only write to /members/{id} if the member is an actual user profile belonging to the current user (never for guest participants)
     if (!isGuest && (!member.uid || member.uid === realAuthUid)) {
@@ -2552,21 +2569,24 @@ export async function cloudAddMember(
         sanitizeForFirestore({
           ...member,
           uid: realAuthUid || member.uid,
+          userId: realAuthUid || member.uid || null,
           groupId: groupMember.groupId,
         }),
         { merge: true }
       );
     }
 
+    const resolvedMemberUid = isGuest ? null : groupMember.memberUid ?? member.uid ?? member.userId ?? null;
     batch.set(
       doc(db, GROUP_MEMBERS_COL, groupMember.id),
       sanitizeForFirestore({
         ...groupMember,
+        userId: resolvedMemberUid,
         memberName: groupMember.memberName || member.name,
         memberUsername: isGuest ? undefined : groupMember.memberUsername || member.username,
         memberAvatar: groupMember.memberAvatar || member.avatar,
         memberColor: groupMember.memberColor || member.color,
-        memberUid: isGuest ? null : groupMember.memberUid || member.uid,
+        memberUid: resolvedMemberUid,
         accountType: isGuest ? 'guest' : groupMember.accountType || member.accountType || 'registered',
       })
     );
