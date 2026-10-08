@@ -93,6 +93,13 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
           />
         </div>
       </div>
+
+      {/* Bottom Attribution Text */}
+      <div className="absolute bottom-6 left-0 right-0 text-center px-4 z-10">
+        <p className="text-[11px] sm:text-xs font-medium text-[#8B9AAF]/90 tracking-wide">
+          made with Love ❤️  by Saroj Yadav
+        </p>
+      </div>
     </div>
   );
 };
