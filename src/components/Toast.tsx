@@ -17,7 +17,7 @@ export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, onDismis
   return (
     <div
       aria-live="polite"
-      className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 max-w-sm w-full pointer-events-none px-3 sm:px-0"
+      className="fixed top-3 inset-x-3 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 sm:w-full sm:max-w-lg z-50 flex flex-col items-center gap-2 pointer-events-none"
     >
       <AnimatePresence mode="popLayout">
         {toasts.map(toast => {
