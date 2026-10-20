@@ -177,19 +177,19 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
                 <div className="py-2.5 space-y-1.5 text-[11px] font-mono">
                   <div className="flex justify-between text-[var(--ink)]">
-                    <span>Burrata</span>
+                    <span>MoMo</span>
                     <span className="font-semibold tnum">16.00</span>
                   </div>
                   <div className="flex justify-between text-[var(--ink)]">
-                    <span>Tagliatelle</span>
+                    <span>Ice Cream</span>
                     <span className="font-semibold tnum">24.00</span>
                   </div>
                   <div className="flex justify-between text-[var(--ink)]">
-                    <span>Negroni ×2</span>
+                    <span>Cold Drink ×2</span>
                     <span className="font-semibold tnum">30.00</span>
                   </div>
                   <div className="flex justify-between text-[var(--ink)]">
-                    <span>Tiramisu</span>
+                    <span>Chowmein</span>
                     <span className="font-semibold tnum">12.00</span>
                   </div>
                   <div className="flex justify-between text-[var(--ink-muted)] pt-1 border-t border-dashed border-[var(--border)]">

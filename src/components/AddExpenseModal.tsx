@@ -289,10 +289,10 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
     setOriginalAmountStr('102.00');
     setSplitType('items');
     const sampleItems: ExpenseLineItem[] = [
-      { id: 'it_1', title: 'Burrata', amount: 16.0, assignedMemberIds: members.slice(0, 1).map(m => m.id) },
-      { id: 'it_2', title: 'Tagliatelle', amount: 24.0, assignedMemberIds: members.slice(1, 2).map(m => m.id) },
-      { id: 'it_3', title: 'Negroni ×2', amount: 30.0, assignedMemberIds: members.slice(0, 2).map(m => m.id) },
-      { id: 'it_4', title: 'Tiramisu', amount: 12.0, assignedMemberIds: [] }, // shared
+      { id: 'it_1', title: 'MoMo', amount: 16.0, assignedMemberIds: members.slice(0, 1).map(m => m.id) },
+      { id: 'it_2', title: 'Ice Cream', amount: 24.0, assignedMemberIds: members.slice(1, 2).map(m => m.id) },
+      { id: 'it_3', title: 'Cold Drink ×2', amount: 30.0, assignedMemberIds: members.slice(0, 2).map(m => m.id) },
+      { id: 'it_4', title: 'Chowmein', amount: 12.0, assignedMemberIds: [] }, // shared
       { id: 'it_5', title: 'Taxes & tip', amount: 20.0, assignedMemberIds: [] }, // shared
     ];
     setLineItems(sampleItems);
@@ -627,7 +627,7 @@ export const AddExpenseModal: React.FC<AddExpenseModalProps> = ({
               <div className="flex items-center gap-2">
                 <input
                   type="text"
-                  placeholder={isFrench ? 'Nom (ex. Burrata)' : 'Item (e.g. Burrata)'}
+                  placeholder={isFrench ? 'Nom (ex. MoMo)' : 'Item (e.g. MoMo)'}
                   value={newItemTitle}
                   onChange={e => setNewItemTitle(e.target.value)}
                   className="ui-input grow py-1.5 text-xs"
